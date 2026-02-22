@@ -13,4 +13,4 @@ client.on('messageCreate', message => {
     }
 });
 
-client.login(token);
+client.login(process.env.TOKEN);
