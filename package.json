@@ -4,7 +4,7 @@
   "description": "My Discord bot",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node deploy-commands.js"
   },
   "dependencies": {
     "discord.js": "^14.14.1",
