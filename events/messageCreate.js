@@ -15,7 +15,7 @@ module.exports = {
     if (!message.channel.name.startsWith('ticket-')) return;
 
     // نتأكد أن العضو إداري (غير اسم الرتبة حسب سيرفرك)
-    if (!message.member.roles.cache.some(r => r.name === "Admin")) return;
+    if (!message.member.roles.cache.some(r => r.name === "Staff")) return;
 
     const key = `${message.guild.id}-${message.channel.id}-${message.author.id}`;
 
