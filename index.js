@@ -42,7 +42,7 @@ if (fs.existsSync(slashPath)) {
   }
 }
 
-// ================= Event الرسائل =================
+// ================= Event الرسائل Prefix =================
 client.on('messageCreate', async message => {
   if (message.author.bot) return;
   if (!message.content.startsWith(prefix)) return;
@@ -61,20 +61,22 @@ client.on('messageCreate', async message => {
   }
 });
 
-// ================= Event Slash =================
-client.on('interactionCreate', async interaction => {
-  if (!interaction.isChatInputCommand()) return;
+// ================= تحميل جميع الأحداث من مجلد events =================
+const eventsPath = path.join(__dirname, 'events');
 
-  const command = client.slashCommands.get(interaction.commandName);
-  if (!command) return;
+if (fs.existsSync(eventsPath)) {
+  const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'));
 
-  try {
-    await command.execute(interaction);
-  } catch (error) {
-    console.error(error);
-    await interaction.reply({ content: "❌ حدث خطأ أثناء تنفيذ الأمر!", ephemeral: true });
+  for (const file of eventFiles) {
+    const event = require(`./events/${file}`);
+
+    if (event.once) {
+      client.once(event.name, (...args) => event.execute(...args, client));
+    } else {
+      client.on(event.name, (...args) => event.execute(...args, client));
+    }
   }
-});
+}
 
 // ================= Ready Event =================
 client.once('ready', () => {
