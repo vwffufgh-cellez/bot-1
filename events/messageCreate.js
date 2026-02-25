@@ -1,41 +1,57 @@
-const { Events } = require('discord.js');
-const getAdmin = require('../utils/getAdmin');
+const TicketClaim = require('../models/TicketClaim');
+const AdminStats = require('../models/AdminStats');
 
-const messageCounter = new Map(); 
-// يخزن عدد الرسائل لكل إداري داخل كل تكت
+const SUPPORT_ROLE_ID = 'ID_SUPPORT_ROLE';
+const TICKET_PREFIX = 'ticket-'; // عدل لو اسم ثاني
 
 module.exports = {
-  name: Events.MessageCreate,
+  name: 'messageCreate',
   async execute(message) {
 
+    // تجاهل البوتات
     if (message.author.bot) return;
-    if (!message.guild) return;
 
-    // نتأكد أن الروم تكت
-    if (!message.channel.name.startsWith('ticket-')) return;
+    // لازم يكون روم تكت
+    if (!message.channel.name.startsWith(TICKET_PREFIX)) return;
 
-    // نتأكد أن العضو إداري (غير اسم الرتبة حسب سيرفرك)
-    if (!message.member.roles.cache.some(r => r.name === "Staff")) return;
+    // لازم يكون إداري
+    if (!message.member.roles.cache.has(SUPPORT_ROLE_ID)) return;
 
-    const key = `${message.guild.id}-${message.channel.id}-${message.author.id}`;
+    // تحقق: هل التكت محسوب من قبل؟
+    const existing = await TicketClaim.findOne({
+      guildId: message.guild.id,
+      channelId: message.channel.id
+    });
 
-    const current = messageCounter.get(key) || 0;
-    messageCounter.set(key, current + 1);
+    if (existing) return;
 
-    // إذا وصل 5 رسائل نحسبها تكت
-    if (messageCounter.get(key) >= 5) {
+    // ✅ أول إداري كتب = استلام تكت
+    await TicketClaim.create({
+      guildId: message.guild.id,
+      channelId: message.channel.id,
+      adminId: message.author.id
+    });
 
-      const admin = await getAdmin(message.guild.id, message.author.id);
+    // تحديث إحصائيات الإداري
+    let stats = await AdminStats.findOne({
+      guildId: message.guild.id,
+      adminId: message.author.id
+    });
 
-      admin.ticketsCount += 1;
-      admin.xp += 300;
-
-      await admin.save();
-
-      messageCounter.delete(key);
-
-      message.channel.send(`✅ تم احتساب تكت للإداري <@${message.author.id}>`);
+    if (!stats) {
+      stats = new AdminStats({
+        guildId: message.guild.id,
+        adminId: message.author.id
+      });
     }
 
+    stats.ticketsClaimed += 1;
+    stats.xp += 5;
+    await stats.save();
+
+    // إشعار (اختياري)
+    message.channel.send(
+      `📌 تم احتساب التذكرة للإداري ${message.author}`
+    );
   }
 };
