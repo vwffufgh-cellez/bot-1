@@ -1,8 +1,8 @@
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
-  guildId: String,
-  userId: String,
+  guildId: { type: String, index: true },
+  userId: { type: String, index: true },
 
   textXP: { type: Number, default: 0 },
   voiceXP: { type: Number, default: 0 },
@@ -15,6 +15,6 @@ const userSchema = new mongoose.Schema({
 
   level: { type: Number, default: 0 },
   lastMessage: { type: Date, default: null }
-});
+}, { timestamps: true });
 
 module.exports = mongoose.model('UserXP', userSchema);
