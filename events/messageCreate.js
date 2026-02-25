@@ -5,25 +5,28 @@ const AdminStats = require('../models/AdminStats');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
-const COOLDOWN = 60 * 1000; // دقيقة
+const COOLDOWN = 60000;
+
+function redPanel(text) {
+  return new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+}
 
 module.exports = {
   name: 'messageCreate',
   async execute(message) {
 
-    if (message.author.bot) return;
     if (!message.guild) return;
+    if (message.author.bot) return;
 
     const content = message.content.toLowerCase().trim();
 
-    // =====================================================
-    // 🔥 1️⃣ إضافة XP لكل رسالة
-    // =====================================================
     await addTextXP(message);
 
-    // =====================================================
-    // 📊 2️⃣ أمر t (إحصائيات المستخدم)
-    // =====================================================
+    // ======================
+    // أمر t
+    // ======================
     if (content === 't') {
 
       const data = await UserXP.findOne({
@@ -31,118 +34,102 @@ module.exports = {
         userId: message.author.id
       });
 
-      if (!data) return message.reply('❌ ما عندك بيانات');
+      if (!data) {
+        return message.reply({ embeds: [redPanel('لا توجد بيانات لك')] });
+      }
 
-      const totalXP = data.textXP + data.voiceXP;
+      const total = data.textXP + data.voiceXP;
 
-      const rank =
-        await UserXP.countDocuments({
-          guildId: message.guild.id,
-          $expr: {
-            $gt: [
-              { $add: ["$textXP", "$voiceXP"] },
-              totalXP
-            ]
-          }
-        }) + 1;
+      const rank = await UserXP.countDocuments({
+        guildId: message.guild.id,
+        $expr: { $gt: [{ $add: ["$textXP", "$voiceXP"] }, total] }
+      }) + 1;
 
       const embed = new EmbedBuilder()
-        .setColor('#2b2d31')
-        .setAuthor({
-          name: message.author.username,
-          iconURL: message.author.displayAvatarURL()
-        })
-        .setTitle('📊 إحصائياتك')
-        .addFields(
-          { name: '⭐ XP الكلي', value: `${totalXP}`, inline: true },
-          { name: '💬 XP كتابي', value: `${data.textXP}`, inline: true },
-          { name: '🎧 XP فويس', value: `${data.voiceXP}`, inline: true },
-          { name: '🏆 اللفل', value: `${data.level}`, inline: true },
-          { name: '📈 ترتيبك', value: `#${rank}`, inline: true }
-        )
-        .setFooter({ text: `Server: ${message.guild.name}` });
+        .setColor(0xff0000)
+        .setTitle('User Statistics')
+        .setDescription(`**Total XP: ${total}
+Text XP: ${data.textXP}
+Voice XP: ${data.voiceXP}
+Level: ${data.level}
+Rank: #${rank}**`);
 
       return message.reply({ embeds: [embed] });
     }
 
-    // =====================================================
-    // 🏆 3️⃣ أمر t top
-    // =====================================================
-    if (content === 't top') {
+    // ======================
+    // أمر top
+    // ======================
+    if (content === 'top') {
 
-      const allUsers = await UserXP.find({ guildId: message.guild.id });
+      const users = await UserXP.find({ guildId: message.guild.id });
 
-      const sorted = allUsers
-        .map(u => ({
-          ...u._doc,
-          total: u.textXP + u.voiceXP
-        }))
+      if (!users.length)
+        return message.reply({ embeds: [redPanel('No Data Found')] });
+
+      const sorted = users
+        .map(u => ({ ...u._doc, total: u.textXP + u.voiceXP }))
         .sort((a, b) => b.total - a.total)
         .slice(0, 10);
 
-      if (!sorted.length)
-        return message.reply('لا يوجد بيانات بعد');
-
-      let description = '';
+      let text = '';
 
       for (let i = 0; i < sorted.length; i++) {
         const member = await message.guild.members.fetch(sorted[i].userId).catch(() => null);
         if (!member) continue;
 
-        description += `**${i + 1}.** ${member.user.username} — ${sorted[i].total} XP\n`;
+        text += `${i + 1}. ${member.user.username} - ${sorted[i].total}\n`;
       }
 
-      const embed = new EmbedBuilder()
-        .setColor('#ffd700')
-        .setTitle('🏆 أفضل 10 أعضاء')
-        .setDescription(description);
-
-      return message.reply({ embeds: [embed] });
-    }
-
-    // =====================================================
-    // 🎟 4️⃣ احتساب التكت للإداري
-    // =====================================================
-    if (!message.channel.name.startsWith(TICKET_PREFIX)) return;
-    if (!message.member.roles.cache.has(SUPPORT_ROLE_ID)) return;
-
-    const existing = await TicketClaim.findOne({
-      guildId: message.guild.id,
-      channelId: message.channel.id
-    });
-
-    if (existing) return;
-
-    await TicketClaim.create({
-      guildId: message.guild.id,
-      channelId: message.channel.id,
-      adminId: message.author.id
-    });
-
-    let stats = await AdminStats.findOne({
-      guildId: message.guild.id,
-      adminId: message.author.id
-    });
-
-    if (!stats) {
-      stats = new AdminStats({
-        guildId: message.guild.id,
-        adminId: message.author.id
+      return message.reply({
+        embeds: [redPanel(text)]
       });
     }
 
-    stats.ticketsClaimed += 1;
-    stats.xp += 5;
+    // ======================
+    // احتساب التكت
+    // ======================
+    if (
+      message.channel.name.startsWith(TICKET_PREFIX) &&
+      message.member.roles.cache.has(SUPPORT_ROLE_ID)
+    ) {
 
-    await stats.save();
+      const existing = await TicketClaim.findOne({
+        guildId: message.guild.id,
+        channelId: message.channel.id
+      });
 
-    message.channel.send(`📌 تم احتساب التذكرة للإداري ${message.author}`);
+      if (existing) return;
+
+      await TicketClaim.create({
+        guildId: message.guild.id,
+        channelId: message.channel.id,
+        adminId: message.author.id
+      });
+
+      let stats = await AdminStats.findOne({
+        guildId: message.guild.id,
+        adminId: message.author.id
+      });
+
+      if (!stats) {
+        stats = new AdminStats({
+          guildId: message.guild.id,
+          adminId: message.author.id
+        });
+      }
+
+      stats.ticketsClaimed += 1;
+      stats.xp += 5;
+      await stats.save();
+
+      message.channel.send({
+        embeds: [redPanel(`Ticket claimed by ${message.author.username}`)]
+      });
+    }
   }
 };
 
-// =====================================================
-// 🔥 دالة إضافة XP
-// =====================================================
 async function addTextXP(message) {
 
   let data = await UserXP.findOne({
@@ -153,37 +140,26 @@ async function addTextXP(message) {
   if (!data) {
     data = new UserXP({
       guildId: message.guild.id,
-      userId: message.author.id,
-      textXP: 0,
-      voiceXP: 0,
-      level: 0,
-      history: []
+      userId: message.author.id
     });
   }
 
   const now = Date.now();
 
-  if (data.lastMessage && now - data.lastMessage < COOLDOWN) return;
+  if (data.lastMessage && now - data.lastMessage.getTime() < COOLDOWN) return;
 
-  const xpGain = Math.floor(Math.random() * 10) + 5;
+  const xp = Math.floor(Math.random() * 10) + 5;
 
-  data.textXP += xpGain;
-  data.lastMessage = now;
-  data.history.push({ amount: xpGain, type: "text" });
+  data.textXP += xp;
+  data.lastMessage = new Date();
 
-  const totalXP = data.textXP + data.voiceXP;
-  const requiredXP = 5 * (data.level ** 2) + 50 * data.level + 100;
+  const total = data.textXP + data.voiceXP;
+  const required = 5 * (data.level ** 2) + 50 * data.level + 100;
 
-  if (totalXP >= requiredXP) {
+  if (total >= required) {
     data.level += 1;
-
     message.channel.send({
-      embeds: [
-        new EmbedBuilder()
-          .setColor('#00ff88')
-          .setTitle('🎉 Level Up!')
-          .setDescription(`مبروك ${message.author} وصلت لفل **${data.level}** 🔥`)
-      ]
+      embeds: [redPanel(`Level Up To ${data.level}`)]
     });
   }
 
