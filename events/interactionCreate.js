@@ -1,102 +1,67 @@
-const { 
-    ChannelType,
-    PermissionsBitField,
-    ActionRowBuilder,
-    ButtonBuilder,
-    ButtonStyle
-} = require('discord.js');
+const TicketClaim = require('../models/TicketClaim');
+const AdminStats = require('../models/AdminStats');
 
-const claimedTickets = new Set(); // يخزن التكت المستلمة مؤقتاً
+const SUPPORT_ROLE_ID = 'ID_SUPPORT_ROLE';
 
 module.exports = {
-    name: 'interactionCreate',
-    async execute(interaction) {
+  name: 'interactionCreate',
+  async execute(interaction) {
 
-        if (!interaction.isButton()) return;
+    if (!interaction.isButton()) return;
+    if (interaction.customId !== 'confirm_claim') return;
 
-        // 🎫 إنشاء التكت
-        if (interaction.customId === 'create_ticket') {
-
-            const channel = await interaction.guild.channels.create({
-                name: `ticket-${interaction.user.username}`,
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    {
-                        id: interaction.guild.id,
-                        deny: [PermissionsBitField.Flags.ViewChannel],
-                    },
-                    {
-                        id: interaction.user.id,
-                        allow: [
-                            PermissionsBitField.Flags.ViewChannel,
-                            PermissionsBitField.Flags.SendMessages
-                        ],
-                    },
-                    {
-                        id: 'ID_SUPPORT_ROLE', // حط ايدي رتبة الدعم
-                        allow: [
-                            PermissionsBitField.Flags.ViewChannel,
-                            PermissionsBitField.Flags.SendMessages
-                        ],
-                    },
-                ],
-            });
-
-            const claimBtn = new ButtonBuilder()
-                .setCustomId('claim_ticket')
-                .setLabel('📌 استلام التذكرة')
-                .setStyle(ButtonStyle.Success);
-
-            const closeBtn = new ButtonBuilder()
-                .setCustomId('close_ticket')
-                .setLabel('🔒 إغلاق التذكرة')
-                .setStyle(ButtonStyle.Danger);
-
-            const row = new ActionRowBuilder().addComponents(claimBtn, closeBtn);
-
-            await channel.send({
-                content: `مرحبًا ${interaction.user} 👋`,
-                components: [row]
-            });
-
-            await interaction.reply({
-                content: `✅ تم إنشاء التذكرة: ${channel}`,
-                ephemeral: true
-            });
-        }
-
-        // 📌 استلام التذكرة
-        if (interaction.customId === 'claim_ticket') {
-
-            if (!interaction.member.roles.cache.has('ID_SUPPORT_ROLE'))
-                return interaction.reply({ content: '❌ ليس لديك صلاحية.', ephemeral: true });
-
-            if (claimedTickets.has(interaction.channel.id))
-                return interaction.reply({ content: '⚠️ التذكرة مستلمة بالفعل.', ephemeral: true });
-
-            claimedTickets.add(interaction.channel.id);
-
-            await interaction.channel.send(
-                `📌 تم استلام التذكرة بواسطة ${interaction.user}`
-            );
-
-            await interaction.reply({
-                content: '✅ استلمت التذكرة بنجاح.',
-                ephemeral: true
-            });
-        }
-
-        // 🔒 إغلاق
-        if (interaction.customId === 'close_ticket') {
-
-            await interaction.reply({
-                content: 'سيتم حذف التذكرة بعد 5 ثواني...',
-                ephemeral: true
-            });
-
-            setTimeout(() => {
-                interaction.channel.delete();
-            }, 5000);
-        }
+    // تحقق من الرتبة
+    if (!interaction.member.roles.cache.has(SUPPORT_ROLE_ID)) {
+      return interaction.reply({
+        content: '❌ هذا الزر مخصص للإدارة فقط',
+        ephemeral: true
+      });
     }
+
+    // تحقق هل التكت مستلم
+    const existing = await TicketClaim.findOne({
+      guildId: interaction.guild.id,
+      channelId: interaction.channel.id
+    });
+
+    if (existing) {
+      return interaction.reply({
+        content: '⚠️ هذه التذكرة مستلمة بالفعل',
+        ephemeral: true
+      });
+    }
+
+    // تسجيل الاستلام
+    await TicketClaim.create({
+      guildId: interaction.guild.id,
+      channelId: interaction.channel.id,
+      adminId: interaction.user.id
+    });
+
+    // تحديث الإحصائيات
+    let stats = await AdminStats.findOne({
+      guildId: interaction.guild.id,
+      adminId: interaction.user.id
+    });
+
+    if (!stats) {
+      stats = new AdminStats({
+        guildId: interaction.guild.id,
+        adminId: interaction.user.id
+      });
+    }
+
+    stats.ticketsClaimed += 1;
+    stats.xp += 5;
+    await stats.save();
+
+    await interaction.reply({
+      content: `✅ تم تسجيل التذكرة لك ${interaction.user}`,
+      ephemeral: true
+    });
+
+    interaction.channel.send(
+      `📌 **تم استلام التذكرة بواسطة:** ${interaction.user}`
+    );
+  }
 };
