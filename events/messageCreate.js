@@ -19,72 +19,71 @@ module.exports = {
     // =====================================
     // 1️⃣ أمر t (XP المستخدم نفسه)
     // =====================================
-    if (content.startsWith('t')) {
-      const args = content.split(/\s+/);
-      if (args[0] === 't') {
+   if (content === 't' || content.startsWith('t ')) {
 
-        const type = args[1] || 'all';
+  const data = await UserXP.findOne({
+    guildId: message.guild.id,
+    userId: message.author.id
+  });
 
-        const data = await UserXP.findOne({
-          guildId: message.guild.id,
-          userId: message.author.id
-        });
+  if (!data) return message.reply('❌ ما عندك بيانات');
 
-        if (!data) {
-          return message.reply('❌ ما عندك XP للحين');
-        }
+  const totalXP = data.textXP + data.voiceXP;
 
-        let xp = data.xp;
-
-        if (type !== 'all') {
-          const days = type === 'week' ? 7 : 30;
-          const now = Date.now();
-
-          xp = data.history
-            .filter(h => now - h.date.getTime() <= days * DAY)
-            .reduce((a, b) => a + b.amount, 0);
-        }
-
-        return message.reply(`
-⭐ **XP حقك**
-━━━━━━━━━━━━
-📊 XP: ${xp}
-📅 النوع: ${
-          type === 'all'
-            ? 'الكل'
-            : type === 'week'
-            ? 'أسبوعي'
-            : 'شهري'
-        }
-        `);
-      }
+  const rank = await UserXP.countDocuments({
+    guildId: message.guild.id,
+    $expr: { 
+      $gt: [
+        { $add: ["$textXP", "$voiceXP"] },
+        totalXP
+      ]
     }
+  }) + 1;
+
+  const embed = new EmbedBuilder()
+    .setColor('#2b2d31')
+    .setAuthor({
+      name: message.author.username,
+      iconURL: message.author.displayAvatarURL()
+    })
+    .setTitle('📊 إحصائياتك')
+    .addFields(
+      { name: '⭐ XP الكلي', value: `${totalXP}`, inline: true },
+      { name: '💬 XP كتابي', value: `${data.textXP}`, inline: true },
+      { name: '🎧 XP فويس', value: `${data.voiceXP}`, inline: true },
+      { name: '🏆 اللفل', value: `${data.level}`, inline: true },
+      { name: '📈 ترتيبك', value: `#${rank}`, inline: true }
+    )
+    .setFooter({ text: `Server: ${message.guild.name}` });
+
+  return message.reply({ embeds: [embed] });
+}
 
     // =====================================
     // 2️⃣ نظام XP العام (كل رسالة)
     // =====================================
-    if (!content.startsWith('!') && !content.startsWith('/')) {
+   if (content === 't top') {
 
-      let userData = await UserXP.findOne({
-        guildId: message.guild.id,
-        userId: message.author.id
-      });
+  const top = await UserXP.find({ guildId: message.guild.id })
+    .sort({ textXP: -1, voiceXP: -1 })
+    .limit(10);
 
-      if (!userData) {
-        userData = new UserXP({
-          guildId: message.guild.id,
-          userId: message.author.id
-        });
-      }
+  let description = '';
 
-      const xpGain = Math.floor(Math.random() * 5) + 1;
+  for (let i = 0; i < top.length; i++) {
+    const member = await message.guild.members.fetch(top[i].userId);
+    const total = top[i].textXP + top[i].voiceXP;
 
-      userData.xp += xpGain;
-      userData.history.push({ amount: xpGain });
+    description += `**${i + 1}.** ${member.user.username} — ${total} XP\n`;
+  }
 
-      await userData.save();
-    }
+  const embed = new EmbedBuilder()
+    .setColor('#ffd700')
+    .setTitle('🏆 أفضل 10 أعضاء')
+    .setDescription(description);
 
+  return message.reply({ embeds: [embed] });
+}
     // =====================================
     // 3️⃣ احتساب التكت للإداري
     // =====================================
