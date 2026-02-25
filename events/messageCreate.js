@@ -124,3 +124,50 @@ module.exports = {
     message.channel.send(`📌 تم احتساب التذكرة للإداري ${message.author}`);
   }
 };
+const { EmbedBuilder } = require('discord.js');
+const UserXP = require('../models/UserXP');
+
+const COOLDOWN = 60 * 1000; // دقيقة
+
+async function addTextXP(message) {
+  let data = await UserXP.findOne({
+    guildId: message.guild.id,
+    userId: message.author.id
+  });
+
+  if (!data) {
+    data = new UserXP({
+      guildId: message.guild.id,
+      userId: message.author.id
+    });
+  }
+
+  const now = Date.now();
+
+  if (data.lastMessage && now - data.lastMessage < COOLDOWN) return;
+
+  const xpGain = Math.floor(Math.random() * 10) + 5;
+
+  data.textXP += xpGain;
+  data.lastMessage = now;
+  data.history.push({ amount: xpGain, type: "text" });
+
+  // نظام لفلات
+  const totalXP = data.textXP + data.voiceXP;
+  const requiredXP = 5 * (data.level ** 2) + 50 * data.level + 100;
+
+  if (totalXP >= requiredXP) {
+    data.level += 1;
+
+    message.channel.send({
+      embeds: [
+        new EmbedBuilder()
+          .setColor('#00ff88')
+          .setTitle('🎉 Level Up!')
+          .setDescription(`مبروك ${message.author} وصلت لفل **${data.level}** 🔥`)
+      ]
+    });
+  }
+
+  await data.save();
+}
