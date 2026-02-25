@@ -1,7 +1,14 @@
+const { EmbedBuilder } = require('discord.js');
 const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
+
+function redPanel(text) {
+  return new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+}
 
 module.exports = {
   name: 'interactionCreate',
@@ -10,15 +17,13 @@ module.exports = {
     if (!interaction.isButton()) return;
     if (interaction.customId !== 'confirm_claim') return;
 
-    // تحقق من الرتبة
     if (!interaction.member.roles.cache.has(SUPPORT_ROLE_ID)) {
       return interaction.reply({
-        content: '❌ هذا الزر مخصص للإدارة فقط',
+        embeds: [redPanel('This button is restricted to support staff only')],
         ephemeral: true
       });
     }
 
-    // تحقق هل التكت مستلم
     const existing = await TicketClaim.findOne({
       guildId: interaction.guild.id,
       channelId: interaction.channel.id
@@ -26,19 +31,17 @@ module.exports = {
 
     if (existing) {
       return interaction.reply({
-        content: '⚠️ هذه التذكرة مستلمة بالفعل',
+        embeds: [redPanel('This ticket has already been claimed')],
         ephemeral: true
       });
     }
 
-    // تسجيل الاستلام
     await TicketClaim.create({
       guildId: interaction.guild.id,
       channelId: interaction.channel.id,
       adminId: interaction.user.id
     });
 
-    // تحديث الإحصائيات
     let stats = await AdminStats.findOne({
       guildId: interaction.guild.id,
       adminId: interaction.user.id
@@ -56,12 +59,12 @@ module.exports = {
     await stats.save();
 
     await interaction.reply({
-      content: `✅ تم تسجيل التذكرة لك ${interaction.user}`,
+      embeds: [redPanel('Ticket successfully registered to you')],
       ephemeral: true
     });
 
-    interaction.channel.send(
-      `📌 **تم استلام التذكرة بواسطة:** ${interaction.user}`
-    );
+    interaction.channel.send({
+      embeds: [redPanel(`Ticket claimed by ${interaction.user.username}`)]
+    });
   }
 };
