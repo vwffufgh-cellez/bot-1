@@ -3,7 +3,9 @@ const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
-const TICKET_PREFIX = 'ticket-'; // عدل لو اسم ثاني
+const TICKET_PREFIX = 'ticket-';
+
+const DAY = 1000 * 60 * 60 * 24;
 
 module.exports = {
   name: 'messageCreate',
@@ -12,12 +14,56 @@ module.exports = {
     if (message.author.bot) return;
     if (!message.guild) return;
 
-    // ================================
-    // 1️⃣ نظام XP العام لكل الأعضاء
-    // ================================
+    const content = message.content.toLowerCase().trim();
 
-    // تجاهل الأوامر
-    if (!message.content.startsWith('!') && !message.content.startsWith('/')) {
+    // =====================================
+    // 1️⃣ أمر t (XP المستخدم نفسه)
+    // =====================================
+    if (content.startsWith('t')) {
+      const args = content.split(/\s+/);
+      if (args[0] === 't') {
+
+        const type = args[1] || 'all';
+
+        const data = await UserXP.findOne({
+          guildId: message.guild.id,
+          userId: message.author.id
+        });
+
+        if (!data) {
+          return message.reply('❌ ما عندك XP للحين');
+        }
+
+        let xp = data.xp;
+
+        if (type !== 'all') {
+          const days = type === 'week' ? 7 : 30;
+          const now = Date.now();
+
+          xp = data.history
+            .filter(h => now - h.date.getTime() <= days * DAY)
+            .reduce((a, b) => a + b.amount, 0);
+        }
+
+        return message.reply(`
+⭐ **XP حقك**
+━━━━━━━━━━━━
+📊 XP: ${xp}
+📅 النوع: ${
+          type === 'all'
+            ? 'الكل'
+            : type === 'week'
+            ? 'أسبوعي'
+            : 'شهري'
+        }
+        `);
+      }
+    }
+
+    // =====================================
+    // 2️⃣ نظام XP العام (كل رسالة)
+    // =====================================
+    if (!content.startsWith('!') && !content.startsWith('/')) {
 
       let userData = await UserXP.findOne({
         guildId: message.guild.id,
@@ -39,14 +85,10 @@ module.exports = {
       await userData.save();
     }
 
-    // =================================
-    // 2️⃣ نظام احتساب التكت للإداري
-    // =================================
-
-    // لازم يكون روم تكت
+    // =====================================
+    // 3️⃣ احتساب التكت للإداري
+    // =====================================
     if (!message.channel.name.startsWith(TICKET_PREFIX)) return;
-
-    // لازم يكون إداري
     if (!message.member.roles.cache.has(SUPPORT_ROLE_ID)) return;
 
     const existing = await TicketClaim.findOne({
@@ -56,7 +98,6 @@ module.exports = {
 
     if (existing) return;
 
-    // أول إداري يكتب = استلام تكت
     await TicketClaim.create({
       guildId: message.guild.id,
       channelId: message.channel.id,
@@ -80,8 +121,6 @@ module.exports = {
 
     await stats.save();
 
-    message.channel.send(
-      `📌 تم احتساب التذكرة للإداري ${message.author}`
-    );
+    message.channel.send(`📌 تم احتساب التذكرة للإداري ${message.author}`);
   }
 };
