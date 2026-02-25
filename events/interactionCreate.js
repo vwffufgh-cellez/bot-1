@@ -1,7 +1,7 @@
 const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 
-const SUPPORT_ROLE_ID = 'ID_SUPPORT_ROLE';
+const SUPPORT_ROLE_ID = '1445473101629493383';
 
 module.exports = {
   name: 'interactionCreate',
