@@ -1,47 +1,64 @@
-function shouldReset(lastDate, range) {
-  if (!lastDate) return true;
-  const now = new Date();
-  const last = new Date(lastDate);
+// utils/resetHelpers.js
+const UserXP = require('../models/UserXP');
 
-  if (range === 'day') {
-    return now.toDateString() !== last.toDateString();
-  }
-  if (range === 'week') {
-    const getWeekKey = date => {
-      const d = new Date(date);
-      const day = (d.getDay() + 6) % 7;
-      d.setDate(d.getDate() - day);
-      d.setHours(0, 0, 0, 0);
-      return d.getTime();
-    };
-    return getWeekKey(now) !== getWeekKey(last);
-  }
-  if (range === 'month') {
-    return now.getFullYear() !== last.getFullYear() || now.getMonth() !== last.getMonth();
-  }
-  return false;
+// دوال مساعدة لإنشاء الطوابع الزمنية لبداية اليوم/الأسبوع/الشهر بتوقيت UTC
+const startOfDay = date => {
+  const d = new Date(date);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const startOfWeek = date => { // الأحد هو 0، نريد الأحد لبداية الأسبوع
+  const d = new Date(date);
+  const day = d.getUTCDay(); // 0 for Sunday, 1 for Monday, etc.
+  d.setUTCDate(d.getUTCDate() - day); // Adjust to the most recent Sunday
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const startOfMonth = date => {
+  const d = new Date(date);
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+
+async function resetIfNeeded(guildId) {
+  const now = Date.now();
+  const currentStartOfDay = startOfDay(now);
+  const currentStartOfWeek = startOfWeek(now);
+  const currentStartOfMonth = startOfMonth(now);
+
+  // إعادة تعيين الخبرة اليومية للمستخدمين الذين لم يتم إعادة تعيينهم اليوم
+  await UserXP.updateMany(
+    {
+      guildId: guildId,
+      dailyResetAt: { $lt: currentStartOfDay } // إذا كان آخر إعادة تعيين قبل بداية اليوم الحالي
+    },
+    {
+      $set: { dailyXp: 0, dailyResetAt: currentStartOfDay }
+    }
+  );
+
+  // إعادة تعيين الخبرة الأسبوعية للمستخدمين الذين لم يتم إعادة تعيينهم هذا الأسبوع
+  await UserXP.updateMany(
+    {
+      guildId: guildId,
+      weeklyResetAt: { $lt: currentStartOfWeek } // إذا كان آخر إعادة تعيين قبل بداية الأسبوع الحالي
+    },
+    {
+      $set: { weeklyXp: 0, weeklyResetAt: currentStartOfWeek }
+    }
+  );
+
+  // إعادة تعيين الخبرة الشهرية للمستخدمين الذين لم يتم إعادة تعيينهم هذا الشهر
+  await UserXP.updateMany(
+    {
+      guildId: guildId,
+      monthlyResetAt: { $lt: currentStartOfMonth } // إذا كان آخر إعادة تعيين قبل بداية الشهر الحالي
+    },
+    {
+      $set: { monthlyXp: 0, monthlyResetAt: currentStartOfMonth }
+    }
+  );
 }
 
-async function resetIfNeeded(userDoc) {
-  const now = new Date();
-
-  if (shouldReset(userDoc.lastDailyReset, 'day')) {
-    userDoc.dailyTextXP = 0;
-    userDoc.dailyVoiceXP = 0;
-    userDoc.lastDailyReset = now;
-  }
-  if (shouldReset(userDoc.lastWeeklyReset, 'week')) {
-    userDoc.weeklyTextXP = 0;
-    userDoc.weeklyVoiceXP = 0;
-    userDoc.lastWeeklyReset = now;
-  }
-  if (shouldReset(userDoc.lastMonthlyReset, 'month')) {
-    userDoc.monthlyTextXP = 0;
-    userDoc.monthlyVoiceXP = 0;
-    userDoc.lastMonthlyReset = now;
-  }
-
-  await userDoc.save();
-}
-
-module.exports = { shouldReset, resetIfNeeded };
+module.exports = { resetIfNeeded };
