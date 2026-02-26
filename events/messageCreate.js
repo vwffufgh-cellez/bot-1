@@ -8,22 +8,91 @@ const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
-// ===== لوحة المتصدرين الموحدة =====
-function createLeaderboardEmbed({ guild, author, data }) {
-  const lines = data.length
-    ? data
-        .map((entry, index) => 
-          `**#${index + 1}** | <@${entry.userId}> | 
-           📝 **نصي:** ${entry.textXP} | 🔊 **صوتي:** ${entry.voiceXP}`
-        )
+// ==================== لوحة المتصدرين الموحدة ====================
+async function handleCombinedLeaderboard(message) {
+  const docs = await UserXP.find({ guildId: message.guild.id });
+
+  // لو ما فيه أي مستخدمين
+  if (!docs.length) {
+    const emptyEmbed = new EmbedBuilder()
+      .setColor(0xE01B1B)
+      .setAuthor({
+        name: 'قائمة متصدرين السيرفر',
+        iconURL: message.guild.iconURL({ size: 128 }) || undefined
+      })
+      .addFields(
+        { name: '💬 أعلى كتابياً', value: 'لا يوجد بيانات بعد.', inline: true },
+        { name: '🔊 أعلى صوتياً', value: 'لا يوجد بيانات بعد.', inline: true }
+      )
+      .setFooter({
+        text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+        iconURL: message.author.displayAvatarURL({ size: 128 })
+      });
+
+    await message.reply({ embeds: [emptyEmbed] });
+    return;
+  }
+
+  // تطبيق resets إذا كان عندك في resetHelpers
+  await Promise.all(docs.map(doc => resetIfNeeded(doc)));
+
+  // استخراج التوب الكتابي
+  const textTop = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc.textXP ?? 0
+    }))
+    .filter(x => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
+
+  // استخراج التوب الصوتي
+  const voiceTop = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc.voiceXP ?? 0
+    }))
+    .filter(x => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
+
+  const textLines = textTop.length
+    ? textTop
+        .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> | **XP: ${entry.xp}**`)
         .join('\n')
     : 'لا يوجد بيانات بعد.';
 
-  return new EmbedBuilder()
-    .setColor(0x00ff00) // لون أخضر موحد للوحة
-    .setAuthor({ name: '🏆 لوحة المتصدرين', iconURL: guild.iconURL({ size: 128 }) || undefined })
-    .setDescription(lines)
-    .setFooter({ text: `${author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: author.displayAvatarURL({ size: 128 }) });
+  const voiceLines = voiceTop.length
+    ? voiceTop
+        .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> | **XP: ${entry.xp}**`)
+        .join('\n')
+    : 'لا يوجد بيانات بعد.';
+
+  const embed = new EmbedBuilder()
+    .setColor(0xE01B1B)
+    .setAuthor({
+      name: 'قائمة متصدرين السيرفر',
+      iconURL: message.guild.iconURL({ size: 128 }) || undefined
+    })
+    .addFields(
+      { name: '💬 أعلى كتابياً', value: textLines, inline: true },
+      { name: '🔊 أعلى صوتياً', value: voiceLines, inline: true }
+    )
+    .setFooter({
+      text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+      iconURL: message.author.displayAvatarURL({ size: 128 })
+    });
+
+  await message.reply({ embeds: [embed] });
+}
+
+// ==================== بنل أحمر عام ====================
+function redPanel(text, title = null) {
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+  if (title) embed.setTitle(title);
+  return embed;
 }
 
 module.exports = {
@@ -35,16 +104,16 @@ module.exports = {
     const lower = content.toLowerCase();
     const tokens = lower.split(/\s+/);
 
-    // ========= أوامر التوب =========
+    // ==================== أمر التوب بدون برفكس ====================
     if (tokens[0] === 't' || tokens[0] === 'top') {
       await handleCombinedLeaderboard(message);
-      return;
+      return; // لا نضيف XP لهذه الرسالة
     }
 
-    // ========= نظام XP الكتابي + مستويات =========
+    // ==================== نظام XP الكتابي + مستويات ====================
     await addTextXP(message);
 
-    // ========= نظام التكت والدعم =========
+    // ==================== نظام التكت والدعم ====================
     if (
       message.channel?.name?.startsWith(TICKET_PREFIX) &&
       message.member?.roles.cache.has(SUPPORT_ROLE_ID)
@@ -77,57 +146,15 @@ module.exports = {
         stats.xp += 5;
         await stats.save();
 
-        await message.channel.send({ embeds: [redPanel(`Ticket claimed by ${message.author.username}`)] });
+        await message.channel.send({
+          embeds: [redPanel(`Ticket claimed by ${message.author.username}`)]
+        });
       }
     }
   }
 };
 
-// ===== لوحات المتصدرين الموحدة =====
-async function handleCombinedLeaderboard(message) {
-  const docs = await UserXP.find({ guildId: message.guild.id });
-
-  if (!docs.length) {
-    const embed = createLeaderboardEmbed({
-      guild: message.guild,
-      author: message.author,
-      data: []
-    });
-    await message.reply({ embeds: [embed] });
-    return;
-  }
-
-  await Promise.all(docs.map(doc => resetIfNeeded(doc)));
-
-  const leaderboard = docs
-    .map(doc => ({
-      userId: doc.userId,
-      textXP: doc.textXP ?? 0,
-      voiceXP: doc.voiceXP ?? 0
-    }))
-    .filter(entry => entry.textXP > 0 || entry.voiceXP > 0)
-    .sort((a, b) => (b.textXP + b.voiceXP) - (a.textXP + a.voiceXP))
-    .slice(0, 5);
-
-  const embed = createLeaderboardEmbed({
-    guild: message.guild,
-    author: message.author,
-    data: leaderboard
-  });
-
-  await message.reply({ embeds: [embed] });
-}
-
-// ===== بنل أحمر عام =====
-function redPanel(text, title = null) {
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setDescription(`**${text}**`);
-  if (title) embed.setTitle(title);
-  return embed;
-}
-
-// ===== نظام XP الكتابي =====
+// ==================== نظام XP الكتابي ====================
 async function addTextXP(message) {
   let data = await UserXP.findOne({
     guildId: message.guild.id,
@@ -162,7 +189,9 @@ async function addTextXP(message) {
 
   if (total >= required) {
     data.level += 1;
-    await message.channel.send({ embeds: [redPanel(`Level Up To ${data.level}`)] });
+    await message.channel.send({
+      embeds: [redPanel(`Level Up To ${data.level}`)]
+    });
   }
 
   await data.save();
