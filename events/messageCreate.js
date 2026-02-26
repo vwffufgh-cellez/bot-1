@@ -435,4 +435,50 @@ module.exports = {
           `• **الخبرة الكلية:** \`${userXp.xp}\`\n` +
           `• **خبرة هذا الأسبوع:** \`${userXp.weeklyXp}\`\n` +
           `• **خبرة هذا اليوم:** \`${userXp.dailyXp}\`\n` +
-          ``• **متبقي للمستوى التالي:** \`${remainingXp > 0 ?
+          `• **متبقي للمستوى التالي:** \`${remainingXp > 0 ? remainingXp : 0}\` نقطة`
+        )
+        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // ----- أمر TOP متعدد النطاقات -----
+    if (tokens[0] === TOP_BASE_ALIAS || tokens[0] === 'توب' || tokens[0] === 'الأعلى') {
+      const guardKey = `${message.id}:top`;
+      if (!markProcessed(guardKey, 2000)) return;
+
+      const args = tokens.slice(1);
+      const scope = detectTopScope(args); // مثل 'all', 'daily', 'weekly', 'monthly'
+      const field = scopeField(scope);    // مثل 'xp', 'dailyXp', 'weeklyXp', 'monthlyXp'
+
+      const topUsers = await UserXP.find({ guildId: message.guild.id, [field]: { $gt: 0 } }) // فقط من لديهم XP
+        .sort({ [field]: -1 }) // ترتيب تنازلي
+        .limit(10); // أعلى 10
+
+      if (topUsers.length === 0) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('لا توجد بيانات خبرة مسجلة بعد.')] });
+        return;
+      }
+
+      const label = scopeLabel(scope); // مثل 'الإجمالي', 'اليومي'
+      const lines = topUsers.map((doc, idx) => {
+        // نضمن أن حقول XP الخاصة بـ doc يتم إعادة تعيينها قبل عرضها
+        // هذا ليس ضروريًا هنا لأن `resetIfNeeded` يتم استدعاؤه مرة واحدة في بداية `execute`
+        // و`resetXpScopes` يتم استدعاؤه عند منح الخبرة الفردية،
+        // ولكن للتأكيد على دقة البيانات المعروضة في اللوحة
+        const xpValue = doc[field] || 0;
+        return `**#${idx + 1}.** <@${doc.userId}> • XP \`${xpValue}\` • مستوى \`${doc.level}\``;
+      }).join('\n');
+
+      const embed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`🏆 قائمة المتصدرين (${label}) في ${message.guild.name}`)
+        .setDescription(lines)
+        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+
+      await message.reply({ embeds: [embed] });
+    }
+  }
+};
