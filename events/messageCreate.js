@@ -458,4 +458,16 @@ module.exports = {
       const label = scopeLabel(scope);
       const lines = topUsers.map((doc, idx) => {
         const value = doc[field] || 0;
-   
+        return `**${idx + 1}.** <@${doc.userId}> • ${label === 'الإجمالي' ? 'XP' : `XP ${label}`} \`${value}\` • مستوى \`${doc.level}\``;
+      }).join('\n');
+
+      const embed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`🏆 قائمة المتصدرين (${label}) في ${message.guild.name}`)
+        .setDescription(lines)
+        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+
+      await message.reply({ embeds: [embed] });
+    }
+  }
+};
