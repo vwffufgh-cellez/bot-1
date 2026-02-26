@@ -143,7 +143,8 @@ async function showWarnings(message, member) {
   await message.reply({ embeds: [embed] });
 }
 
-// ---- مساعدات الـ XP ----
+// ---- مساعدات الـ XP (تم نسخها هنا من أجل `resetXpScopes` المحلي) ----
+// هذه يجب أن تكون متطابقة مع دوال `startOfDay` إلخ في `utils/resetHelpers.js`
 const startOfDay = date => {
   const d = new Date(date);
   d.setUTCHours(0, 0, 0, 0);
@@ -151,8 +152,8 @@ const startOfDay = date => {
 };
 const startOfWeek = date => {
   const d = new Date(date);
-  const day = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() - day + 1);
+  const day = d.getUTCDay(); // 0 for Sunday, 1 for Monday, etc.
+  d.setUTCDate(d.getUTCDate() - day); // Adjust to the most recent Sunday
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime();
 };
@@ -163,18 +164,23 @@ const startOfMonth = date => {
   return d.getTime();
 };
 
+// وظيفة داخلية لتحديث XP scopes للمستخدم الفردي
 function resetXpScopes(doc, now = Date.now()) {
-  if (!doc.dailyResetAt || doc.dailyResetAt < startOfDay(now)) {
+  const currentStartOfDay = startOfDay(now);
+  const currentStartOfWeek = startOfWeek(now);
+  const currentStartOfMonth = startOfMonth(now);
+
+  if (!doc.dailyResetAt || doc.dailyResetAt < currentStartOfDay) {
     doc.dailyXp = 0;
-    doc.dailyResetAt = startOfDay(now);
+    doc.dailyResetAt = currentStartOfDay;
   }
-  if (!doc.weeklyResetAt || doc.weeklyResetAt < startOfWeek(now)) {
+  if (!doc.weeklyResetAt || doc.weeklyResetAt < currentStartOfWeek) {
     doc.weeklyXp = 0;
-    doc.weeklyResetAt = startOfWeek(now);
+    doc.weeklyResetAt = currentStartOfWeek;
   }
-  if (!doc.monthlyResetAt || doc.monthlyResetAt < startOfMonth(now)) {
+  if (!doc.monthlyResetAt || doc.monthlyResetAt < currentStartOfMonth) {
     doc.monthlyXp = 0;
-    doc.monthlyResetAt = startOfMonth(now);
+    doc.monthlyResetAt = currentStartOfMonth;
   }
 }
 
@@ -187,7 +193,7 @@ function detectTopScope(args) {
   for (const [scope, list] of Object.entries(TOP_SCOPE_KEYWORDS)) {
     if (list.includes(keyword)) return scope;
   }
-  return 'all';
+  return 'all'; // الافتراضي
 }
 
 function scopeField(scope) {
@@ -195,7 +201,7 @@ function scopeField(scope) {
     case 'daily': return 'dailyXp';
     case 'weekly': return 'weeklyXp';
     case 'monthly': return 'monthlyXp';
-    default: return 'xp';
+    default: return 'xp'; // 'xp' هو الحقل الكلي
   }
 }
 
@@ -214,6 +220,7 @@ module.exports = {
   async execute(message) {
     if (!message.guild || message.author.bot) return;
 
+    // استدعاء وظيفة إعادة التعيين العامة
     await resetIfNeeded(message.guild.id);
 
     const content = message.content.trim();
@@ -358,7 +365,7 @@ module.exports = {
       return;
     }
 
-    // ----- منح الخبرة -----
+    // ----- منح الخبرة (الرسائل النصية) -----
     const now = Date.now();
     const lastXp = userXpCooldowns.get(message.author.id) || 0;
     if (now - lastXp >= XP_COOLDOWN_PER_USER) {
@@ -379,14 +386,14 @@ module.exports = {
         });
       }
 
-      resetXpScopes(userXp, now);
+      resetXpScopes(userXp, now); // إعادة تعيين الخبرة اليومية/الأسبوعية/الشهرية إذا لزم الأمر قبل إضافة المزيد
       const oldLevel = userXp.level;
 
-      userXp.xp += xpAmount;
+      userXp.xp += xpAmount; // الخبرة الكلية
       userXp.dailyXp += xpAmount;
       userXp.weeklyXp += xpAmount;
       userXp.monthlyXp += xpAmount;
-      userXp.level = calculateLevel(userXp.xp);
+      userXp.level = calculateLevel(userXp.xp); // حساب المستوى من الخبرة الكلية
 
       await userXp.save();
       userXpCooldowns.set(message.author.id, now);
@@ -396,7 +403,7 @@ module.exports = {
       }
     }
 
-    // ----- أمر XP -----
+    // ----- أمر XP (عرض خبرة المستخدم) -----
     if (XP_ALIASES.includes(tokens[0])) {
       const guardKey = `${message.id}:xp`;
       if (!markProcessed(guardKey)) return;
@@ -412,13 +419,13 @@ module.exports = {
         return;
       }
 
-      resetXpScopes(userXp, now);
-      await userXp.save();
+      resetXpScopes(userXp, now); // تأكد من تحديث الخبرة اليومية/الأسبوعية/الشهرية قبل عرضها
+      await userXp.save(); // حفظ التغييرات بعد إعادة التعيين
 
       const currentLevel = userXp.level;
-      const currentLevelStart = xpForLevel(currentLevel);
-      const xpInCurrentLevel = userXp.xp - currentLevelStart;
-      const xpNeeded = xpForNextLevel(currentLevel) - userXp.xp;
+      const xpToReachCurrentLevel = xpForLevel(currentLevel);
+      const xpNeededForNextLevel = xpForNextLevel(currentLevel);
+      const remainingXp = xpNeededForNextLevel - userXp.xp;
 
       const embed = new EmbedBuilder()
         .setColor(0x0099ff)
@@ -428,46 +435,4 @@ module.exports = {
           `• **الخبرة الكلية:** \`${userXp.xp}\`\n` +
           `• **خبرة هذا الأسبوع:** \`${userXp.weeklyXp}\`\n` +
           `• **خبرة هذا اليوم:** \`${userXp.dailyXp}\`\n` +
-          `• **متبقي للمستوى التالي:** \`${xpNeeded}\` نقطة`
-        )
-        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
-
-      await message.reply({ embeds: [embed] });
-      return;
-    }
-
-    // ----- أمر TOP متعدد النطاقات -----
-    if (tokens[0] === TOP_BASE_ALIAS || tokens[0] === 'توب' || tokens[0] === 'الأعلى') {
-      const guardKey = `${message.id}:top`;
-      if (!markProcessed(guardKey, 2000)) return;
-
-      const args = tokens.slice(1);
-      const scope = detectTopScope(args);
-      const field = scopeField(scope);
-
-      const topUsers = await UserXP.find({ guildId: message.guild.id })
-        .sort({ [field]: -1 })
-        .limit(10);
-
-      if (topUsers.length === 0) {
-        clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا توجد بيانات خبرة مسجلة بعد.')] });
-        return;
-      }
-
-      const label = scopeLabel(scope);
-      const lines = topUsers.map((doc, idx) => {
-        const value = doc[field] || 0;
-        return `**${idx + 1}.** <@${doc.userId}> • ${label === 'الإجمالي' ? 'XP' : `XP ${label}`} \`${value}\` • مستوى \`${doc.level}\``;
-      }).join('\n');
-
-      const embed = new EmbedBuilder()
-        .setColor(0x0099ff)
-        .setTitle(`🏆 قائمة المتصدرين (${label}) في ${message.guild.name}`)
-        .setDescription(lines)
-        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
-
-      await message.reply({ embeds: [embed] });
-    }
-  }
-};
+          ``• **متبقي للمستوى التالي:** \`${remainingXp > 0 ?
