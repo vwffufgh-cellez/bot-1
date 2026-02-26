@@ -5,20 +5,33 @@ const UserXPSchema = new mongoose.Schema({
   guildId: { type: String, required: true },
   userId: { type: String, required: true },
   
-  // الخبرة الكلية للمستوى
-  xp: { type: Number, default: 0 },
-  level: { type: Number, default: 0 },
+  // --- الخبرة الكتابية ---
+  text: {
+    xp: { type: Number, default: 0 }, // الخبرة الكلية للكتابة
+    level: { type: Number, default: 0 }, // المستوى بناءً على خبرة الكتابة
+    daily: { type: Number, default: 0 },
+    weekly: { type: Number, default: 0 },
+    monthly: { type: Number, default: 0 },
+    dailyResetAt: { type: Number, default: 0 },
+    weeklyResetAt: { type: Number, default: 0 },
+    monthlyResetAt: { type: Number, default: 0 },
+  },
 
-  // الخبرة للنطاقات الزمنية (يومي، أسبوعي، شهري)
-  dailyXp: { type: Number, default: 0 },
-  weeklyXp: { type: Number, default: 0 },
-  monthlyXp: { type: Number, default: 0 },
+  // --- الخبرة الصوتية ---
+  voice: {
+    xp: { type: Number, default: 0 }, // الخبرة الكلية للصوت
+    level: { type: Number, default: 0 }, // المستوى بناءً على خبرة الصوت
+    daily: { type: Number, default: 0 },
+    weekly: { type: Number, default: 0 },
+    monthly: { type: Number, default: 0 },
+    dailyResetAt: { type: Number, default: 0 },
+    weeklyResetAt: { type: Number, default: 0 },
+    monthlyResetAt: { type: Number, default: 0 },
+  },
 
-  // الطوابع الزمنية لآخر إعادة تعيين لكل نطاق (لتتبع متى يجب إعادة التعيين التالية)
-  // تخزن كأرقام (timestamps) لسهولة المقارنة مع startOfDay/startOfWeek/startOfMonth
-  dailyResetAt: { type: Number, default: 0 },
-  weeklyResetAt: { type: Number, default: 0 },
-  monthlyResetAt: { type: Number, default: 0 },
+  // --- إعدادات عامة ---
+  // يمكنك الاحتفاظ بحقول XP إجمالية إذا كنت بحاجة إليها لأغراض أخرى
+  // totalXp: { type: Number, default: 0 }, 
 });
 
 // للتأكد من أن كل مستخدم لديه سجل واحد فقط لكل سيرفر
