@@ -11,23 +11,31 @@ module.exports = {
 
     const guildId = member.guild.id;
     const userId = member.id;
-
     const now = Date.now();
+    const key = `${guildId}-${userId}`;
+
+    // دخول قناة صوتية
     if (newState.channel && !oldState.channel) {
-      speakingUsers.set(`${guildId}-${userId}`, now);
+      speakingUsers.set(key, now);
       return;
     }
 
-    if (!newState.channel && oldState.channel) {
-      const key = `${guildId}-${userId}`;
-      const joinedAt = speakingUsers.get(key);
-      if (!joinedAt) return;
-      const deltaMinutes = Math.floor((now - joinedAt) / 1000 / 60);
-      speakingUsers.delete(key);
+    // انتقال بين القنوات
+    if (newState.channel && oldState.channel && newState.channel.id !== oldState.channel.id) {
+      speakingUsers.set(key, now);
+      return;
+    }
 
+    // خروج نهائي من الصوت
+    if (!newState.channel && oldState.channel) {
+      const joinedAt = speakingUsers.get(key);
+      speakingUsers.delete(key);
+      if (!joinedAt) return;
+
+      const deltaMinutes = Math.floor((now - joinedAt) / 60000);
       if (deltaMinutes <= 0) return;
 
-      const xpAmount = deltaMinutes * 2; // تستطيع تعديل المعدل
+      const xpAmount = deltaMinutes * 2; // عدّل المعدل إذا لزم
 
       const user = await UserXP.findOneAndUpdate(
         { guildId, userId },
