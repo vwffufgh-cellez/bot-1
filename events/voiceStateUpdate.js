@@ -1,44 +1,48 @@
 const UserXP = require('../models/UserXP');
+const { resetIfNeeded } = require('../utils/resetHelpers');
 
-const VOICE_XP_PER_MINUTE = 5;
+const speakingUsers = new Map();
 
 module.exports = {
   name: 'voiceStateUpdate',
   async execute(oldState, newState) {
+    const member = newState.member ?? oldState.member;
+    if (!member || member.user.bot) return;
 
-    if (!newState.member || newState.member.user.bot) return;
+    const guildId = member.guild.id;
+    const userId = member.id;
 
-    if (!oldState.channel && newState.channel) {
-      // دخل فويس
-      newState.member.voice.joinTime = Date.now();
+    const now = Date.now();
+    if (newState.channel && !oldState.channel) {
+      speakingUsers.set(`${guildId}-${userId}`, now);
+      return;
     }
 
-    if (oldState.channel && !newState.channel) {
-      // خرج من فويس
-      const joinTime = oldState.member.voice.joinTime;
-      if (!joinTime) return;
+    if (!newState.channel && oldState.channel) {
+      const key = `${guildId}-${userId}`;
+      const joinedAt = speakingUsers.get(key);
+      if (!joinedAt) return;
+      const deltaMinutes = Math.floor((now - joinedAt) / 1000 / 60);
+      speakingUsers.delete(key);
 
-      const minutes = Math.floor((Date.now() - joinTime) / 60000);
-      if (minutes <= 0) return;
+      if (deltaMinutes <= 0) return;
 
-      let data = await UserXP.findOne({
-        guildId: oldState.guild.id,
-        userId: oldState.member.id
-      });
+      const xpAmount = deltaMinutes * 2; // تستطيع تعديل المعدل
 
-      if (!data) {
-        data = new UserXP({
-          guildId: oldState.guild.id,
-          userId: oldState.member.id
-        });
-      }
+      const user = await UserXP.findOneAndUpdate(
+        { guildId, userId },
+        {},
+        { upsert: true, new: true }
+      );
 
-      const xpGain = minutes * VOICE_XP_PER_MINUTE;
+      await resetIfNeeded(user);
 
-      data.voiceXP += xpGain;
-      data.history.push({ amount: xpGain, type: "voice" });
+      user.voiceXP += xpAmount;
+      user.dailyVoiceXP += xpAmount;
+      user.weeklyVoiceXP += xpAmount;
+      user.monthlyVoiceXP += xpAmount;
 
-      await data.save();
+      await user.save();
     }
   }
 };
