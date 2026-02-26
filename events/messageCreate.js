@@ -3,7 +3,7 @@ const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 const Warning = require('../models/Warning');
-const { resetIfNeeded } = require('../utils/resetHelpers');
+const { resetIfNeeded, initializeXpObject, resetXpScopes } = require('../utils/resetHelpers');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
@@ -19,7 +19,7 @@ const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات'];
 // XP و TOP
 const XP_PER_MESSAGE_MIN = 10;
 const XP_PER_MESSAGE_MAX = 20;
-const XP_COOLDOWN_PER_USER = 60_000;
+const XP_COOLDOWN_PER_USER = 60_000; // Cooldown for each user to gain XP per message
 const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_BASE_ALIAS = 'top';
 const TOP_SCOPE_KEYWORDS = {
@@ -33,9 +33,9 @@ const TOP_SCOPE_KEYWORDS = {
 const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
 const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
 
-// خرائط الحماية
+// خرائط الحماية (لمنع تنفيذ الأوامر المتعددة بسرعة)
 const processedCommands = new Map();
-const userXpCooldowns = new Map();
+const userXpCooldowns = new Map(); // لتتبع متى آخر مرة كسب المستخدم XP
 
 function markProcessed(key, ttl = 3000) {
   if (processedCommands.has(key)) return false;
@@ -64,7 +64,7 @@ const bluePanel = (text, title = null) => {
 const redConfirmPanel = text =>
   new EmbedBuilder().setColor(0xff0000).setDescription(`✅ ${text}`);
 
-// ---- التحذيرات (نفس ما كان عندك) ----
+// ---- التحذيرات ----
 const warnDetailEmbed = ({ guild, target, moderator, reason, caseId }) => {
   return new EmbedBuilder()
     .setColor(0xff0000)
@@ -143,50 +143,18 @@ async function showWarnings(message, member) {
   await message.reply({ embeds: [embed] });
 }
 
-// ---- مساعدات الـ XP (تم نسخها هنا من أجل `resetXpScopes` المحلي) ----
-// هذه يجب أن تكون متطابقة مع دوال `startOfDay` إلخ في `utils/resetHelpers.js`
-const startOfDay = date => {
-  const d = new Date(date);
-  d.setUTCHours(0, 0, 0, 0);
-  return d.getTime();
+// ---- مساعدات الـ XP (مُحدّثة) ----
+const calculateLevel = (xp, isVoice = false) => {
+  // يمكن تعديل صيغة المستوى لكل نوع إذا لزم الأمر
+  // حالياً، تستخدم نفس الصيغة للجميع
+  return Math.floor(0.1 * Math.sqrt(xp));
 };
-const startOfWeek = date => {
-  const d = new Date(date);
-  const day = d.getUTCDay(); // 0 for Sunday, 1 for Monday, etc.
-  d.setUTCDate(d.getUTCDate() - day); // Adjust to the most recent Sunday
-  d.setUTCHours(0, 0, 0, 0);
-  return d.getTime();
+const xpForLevel = (level, isVoice = false) => {
+  return 10 * (level ** 2);
 };
-const startOfMonth = date => {
-  const d = new Date(date);
-  d.setUTCDate(1);
-  d.setUTCHours(0, 0, 0, 0);
-  return d.getTime();
+const xpForNextLevel = (level, isVoice = false) => {
+  return xpForLevel(level + 1, isVoice);
 };
-
-// وظيفة داخلية لتحديث XP scopes للمستخدم الفردي
-function resetXpScopes(doc, now = Date.now()) {
-  const currentStartOfDay = startOfDay(now);
-  const currentStartOfWeek = startOfWeek(now);
-  const currentStartOfMonth = startOfMonth(now);
-
-  if (!doc.dailyResetAt || doc.dailyResetAt < currentStartOfDay) {
-    doc.dailyXp = 0;
-    doc.dailyResetAt = currentStartOfDay;
-  }
-  if (!doc.weeklyResetAt || doc.weeklyResetAt < currentStartOfWeek) {
-    doc.weeklyXp = 0;
-    doc.weeklyResetAt = currentStartOfWeek;
-  }
-  if (!doc.monthlyResetAt || doc.monthlyResetAt < currentStartOfMonth) {
-    doc.monthlyXp = 0;
-    doc.monthlyResetAt = currentStartOfMonth;
-  }
-}
-
-const calculateLevel = xp => Math.floor(0.1 * Math.sqrt(xp));
-const xpForLevel = level => 10 * (level ** 2);
-const xpForNextLevel = level => xpForLevel(level + 1);
 
 function detectTopScope(args) {
   const keyword = (args[0] || '').toLowerCase();
@@ -198,9 +166,9 @@ function detectTopScope(args) {
 
 function scopeField(scope) {
   switch (scope) {
-    case 'daily': return 'dailyXp';
-    case 'weekly': return 'weeklyXp';
-    case 'monthly': return 'monthlyXp';
+    case 'daily': return 'daily';
+    case 'weekly': return 'weekly';
+    case 'monthly': return 'monthly';
     default: return 'xp'; // 'xp' هو الحقل الكلي
   }
 }
@@ -234,7 +202,8 @@ module.exports = {
 
       if (!message.member.permissions.has(MOD_REQUIRED_PERM)) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا تملك صلاحية تحذير الأعضاء.')] });
+        // الرد في نفس القناة بدون mention
+        await message.channel.send({ embeds: [redPanel('لا تملك صلاحية تحذير الأعضاء.')] });
         return;
       }
 
@@ -244,30 +213,30 @@ module.exports = {
 
       if (!targetMember) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
+        await message.channel.send({ embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
         return;
       }
       if (targetMember.user.bot) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا يمكن تحذير بوت.')] });
+        await message.channel.send({ embeds: [redPanel('لا يمكن تحذير بوت.')] });
         return;
       }
       if (targetMember.id === message.author.id) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا يمكنك تحذير نفسك.')] });
+        await message.channel.send({ embeds: [redPanel('لا يمكنك تحذير نفسك.')] });
         return;
       }
       if (message.guild.ownerId !== message.author.id &&
           message.member.roles.highest.position <= targetMember.roles.highest.position) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا يمكنك تحذير هذا العضو لأن رتبته أعلى أو مساوية لرتبتك.')] });
+        await message.channel.send({ embeds: [redPanel('لا يمكنك تحذير هذا العضو لأن رتبته أعلى أو مساوية لرتبتك.')] });
         return;
       }
 
       const reason = parts.slice(2).join(' ').trim();
       if (!reason) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('الرجاء كتابة سبب التحذير. الاستخدام: `warn @user سبب`')] });
+        await message.channel.send({ embeds: [redPanel('الرجاء كتابة سبب التحذير. الاستخدام: `warn @user سبب`')] });
         return;
       }
 
@@ -295,12 +264,12 @@ module.exports = {
 
       if (!isTicketChannel) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
+        await message.channel.send({ embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
         return;
       }
       if (!hasSupportRole) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا تملك صلاحيات الاستلام.')] });
+        await message.channel.send({ embeds: [redPanel('لا تملك صلاحيات الاستلام.')] });
         return;
       }
 
@@ -308,9 +277,9 @@ module.exports = {
       if (ticketClaim) {
         clearProcessed(guardKey);
         if (ticketClaim.claimedById === message.author.id) {
-          await message.reply({ embeds: [bluePanel('لقد استلمت هذه التذكرة بالفعل.')] });
+          await message.channel.send({ embeds: [bluePanel('لقد استلمت هذه التذكرة بالفعل.')] });
         } else {
-          await message.reply({ embeds: [redPanel(`التذكرة مستلمة حالياً بواسطة <@${ticketClaim.claimedById}>.`)] });
+          await message.channel.send({ embeds: [redPanel(`التذكرة مستلمة حالياً بواسطة <@${ticketClaim.claimedById}>.`)] });
         }
         return;
       }
@@ -339,24 +308,24 @@ module.exports = {
 
       if (!isTicketChannel) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
+        await message.channel.send({ embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
         return;
       }
       if (!hasSupportRole) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا تملك صلاحيات الإلغاء.')] });
+        await message.channel.send({ embeds: [redPanel('لا تملك صلاحيات الإلغاء.')] });
         return;
       }
 
       const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (!ticketClaim) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')] });
+        await message.channel.send({ embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')] });
         return;
       }
       if (ticketClaim.claimedById !== message.author.id) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)] });
+        await message.channel.send({ embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)] });
         return;
       }
 
@@ -370,36 +339,40 @@ module.exports = {
     const lastXp = userXpCooldowns.get(message.author.id) || 0;
     if (now - lastXp >= XP_COOLDOWN_PER_USER) {
       const xpAmount = Math.floor(Math.random() * (XP_PER_MESSAGE_MAX - XP_PER_MESSAGE_MIN + 1)) + XP_PER_MESSAGE_MIN;
+      
       let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: message.author.id });
       if (!userXp) {
+        // إنشاء سجل جديد بالهياكل الداخلية (text, voice)
         userXp = new UserXP({
           guildId: message.guild.id,
           userId: message.author.id,
-          xp: 0,
-          level: 0,
-          dailyXp: 0,
-          weeklyXp: 0,
-          monthlyXp: 0,
-          dailyResetAt: startOfDay(now),
-          weeklyResetAt: startOfWeek(now),
-          monthlyResetAt: startOfMonth(now)
+          text: { xp: 0, level: 0, daily: 0, weekly: 0, monthly: 0, dailyResetAt: 0, weeklyResetAt: 0, monthlyResetAt: 0 },
+          voice: { xp: 0, level: 0, daily: 0, weekly: 0, monthly: 0, dailyResetAt: 0, weeklyResetAt: 0, monthlyResetAt: 0 },
         });
       }
 
-      resetXpScopes(userXp, now); // إعادة تعيين الخبرة اليومية/الأسبوعية/الشهرية إذا لزم الأمر قبل إضافة المزيد
-      const oldLevel = userXp.level;
+      // التأكد من وجود الكائنات الداخلية وتعيين التواريخ الأولية
+      userXp.text = initializeXpObject(userXp.text);
+      userXp.voice = initializeXpObject(userXp.voice);
+      
+      // إعادة تعيين الخبرة اليومية/الأسبوعية/الشهرية قبل إضافة المزيد
+      resetXpScopes(userXp, now); 
+      
+      const oldTextLevel = userXp.text.level;
 
-      userXp.xp += xpAmount; // الخبرة الكلية
-      userXp.dailyXp += xpAmount;
-      userXp.weeklyXp += xpAmount;
-      userXp.monthlyXp += xpAmount;
-      userXp.level = calculateLevel(userXp.xp); // حساب المستوى من الخبرة الكلية
+      // إضافة الخبرة الكتابية
+      userXp.text.xp += xpAmount;
+      userXp.text.daily += xpAmount;
+      userXp.text.weekly += xpAmount;
+      userXp.text.monthly += xpAmount;
+      userXp.text.level = calculateLevel(userXp.text.xp);
 
       await userXp.save();
-      userXpCooldowns.set(message.author.id, now);
+      userXpCooldowns.set(message.author.id, now); // تحديث آخر مرة كسب فيها XP
 
-      if (userXp.level > oldLevel) {
-        await message.channel.send({ embeds: [bluePanel(`🎉 تهانينا <@${message.author.id}>! وصلت إلى المستوى **${userXp.level}**`)] }).catch(() => {});
+      // إشعار بالوصول للمستوى الجديد (كتابي)
+      if (userXp.text.level > oldTextLevel) {
+        await message.channel.send({ embeds: [bluePanel(`🎉 تهانينا <@${message.author.id}>! وصلت إلى المستوى **${userXp.text.level}** (كتابي)`)] }).catch(() => {});
       }
     }
 
@@ -413,72 +386,109 @@ module.exports = {
       const member = (await fetchMember(message.guild, targetArg)) || message.member;
       const userXp = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
 
-      if (!userXp || userXp.xp === 0) {
+      if (!userXp || (userXp.text.xp === 0 && userXp.voice.xp === 0)) {
         clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel(`لا يوجد لدى <@${member.id}> أي خبرة حتى الآن.`)] });
+        await message.channel.send({ embeds: [redPanel(`لا يوجد لدى <@${member.id}> أي خبرة حتى الآن.`)] });
         return;
       }
 
-      resetXpScopes(userXp, now); // تأكد من تحديث الخبرة اليومية/الأسبوعية/الشهرية قبل عرضها
+      // التأكد من إعادة تعيين النطاقات الزمنية قبل عرض الخبرة
+      resetXpScopes(userXp, now);
       await userXp.save(); // حفظ التغييرات بعد إعادة التعيين
 
-      const currentLevel = userXp.level;
-      const xpToReachCurrentLevel = xpForLevel(currentLevel);
-      const xpNeededForNextLevel = xpForNextLevel(currentLevel);
-      const remainingXp = xpNeededForNextLevel - userXp.xp;
+      // الخبرة الكتابية
+      const textLevel = userXp.text.level;
+      const textXpNeededForNextLevel = xpForNextLevel(textLevel);
+      const textRemainingXp = textXpNeededForNextLevel - userXp.text.xp;
+
+      // الخبرة الصوتية
+      const voiceLevel = userXp.voice.level;
+      const voiceXpNeededForNextLevel = xpForNextLevel(voiceLevel);
+      const voiceRemainingXp = voiceXpNeededForNextLevel - userXp.voice.xp;
 
       const embed = new EmbedBuilder()
         .setColor(0x0099ff)
         .setAuthor({ name: `خبرة ${member.user.tag}`, iconURL: member.displayAvatarURL({ size: 128 }) })
         .setDescription(
-          `• **المستوى:** \`${currentLevel}\`\n` +
-          `• **الخبرة الكلية:** \`${userXp.xp}\`\n` +
-          `• **خبرة هذا الأسبوع:** \`${userXp.weeklyXp}\`\n` +
-          `• **خبرة هذا اليوم:** \`${userXp.dailyXp}\`\n` +
-          `• **متبقي للمستوى التالي:** \`${remainingXp > 0 ? remainingXp : 0}\` نقطة`
+          `**خبرة كتابية:**\n` +
+          `• المستوى: \`${textLevel}\`\n` +
+          `• الخبرة الكلية: \`${userXp.text.xp}\`\n` +
+          `• خبرة هذا الأسبوع: \`${userXp.text.weekly}\`\n` +
+          `• خبرة هذا اليوم: \`${userXp.text.daily}\`\n` +
+          `• متبقي للمستوى التالي: \`${textRemainingXp > 0 ? textRemainingXp : 0}\` نقطة\n\n` +
+          `**خبرة صوتية:**\n` +
+          `• المستوى: \`${voiceLevel}\`\n` +
+          `• الخبرة الكلية: \`${userXp.voice.xp}\`\n` +
+          `• خبرة هذا الأسبوع: \`${userXp.voice.weekly}\`\n` +
+          `• خبرة هذا اليوم: \`${userXp.voice.daily}\`\n` +
+          `• متبقي للمستوى التالي: \`${voiceRemainingXp > 0 ? voiceRemainingXp : 0}\` نقطة`
         )
-        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+        // إضافة التاريخ واسم المستخدم الذي قام بالاستدعاء
+        .setFooter({ text: `بطلب من ${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
 
-      await message.reply({ embeds: [embed] });
+      // الرد في نفس القناة بدون mention
+      await message.channel.send({ embeds: [embed] });
       return;
     }
 
     // ----- أمر TOP متعدد النطاقات -----
-    if (tokens[0] === TOP_BASE_ALIAS || tokens[0] === 'توب' || tokens[0] === 'الأعلى') {
+    if (tokens[0] === TOP_BASE_ALIAS || tokens[0] === 'توب' || tokens[0] === 'الأعلى' || tokens[0] === 'قائمة') {
       const guardKey = `${message.id}:top`;
-      if (!markProcessed(guardKey, 2000)) return;
+      if (!markProcessed(guardKey, 2000)) return; // Cooldown قصير لأمر TOP
 
       const args = tokens.slice(1);
       const scope = detectTopScope(args); // مثل 'all', 'daily', 'weekly', 'monthly'
-      const field = scopeField(scope);    // مثل 'xp', 'dailyXp', 'weeklyXp', 'monthlyXp'
+      const label = scopeLabel(scope);    // مثل 'الإجمالي', 'اليومي'
 
-      const topUsers = await UserXP.find({ guildId: message.guild.id, [field]: { $gt: 0 } }) // فقط من لديهم XP
-        .sort({ [field]: -1 }) // ترتيب تنازلي
-        .limit(10); // أعلى 10
+      // --- استعلام عن أفضل 10 في الخبرة الكتابية ---
+      const textScopeField = scopeField(scope); // 'xp', 'daily', 'weekly', 'monthly'
+      const topTextUsers = await UserXP.find({ guildId: message.guild.id, [`text.${textScopeField}`]: { $gt: 0 } })
+        .sort({ [`text.${textScopeField}`]: -1 })
+        .limit(10);
 
-      if (topUsers.length === 0) {
-        clearProcessed(guardKey);
-        await message.reply({ embeds: [redPanel('لا توجد بيانات خبرة مسجلة بعد.')] });
-        return;
+      // --- استعلام عن أفضل 10 في الخبرة الصوتية ---
+      const voiceScopeField = scopeField(scope); // نفس الحقول
+      const topVoiceUsers = await UserXP.find({ guildId: message.guild.id, [`voice.${voiceScopeField}`]: { $gt: 0 } })
+        .sort({ [`voice.${voiceScopeField}`]: -1 })
+        .limit(10);
+
+      // --- بناء لوحة المتصدرين الكتابية ---
+      let textLines = [];
+      if (topTextUsers.length > 0) {
+        textLines = topTextUsers.map((doc, idx) => {
+          const xpValue = doc.text[textScopeField] || 0;
+          return `**#${idx + 1}.** <@${doc.userId}> • XP \`${xpValue}\` • مستوى \`${doc.text.level}\``;
+        }).join('\n');
+      } else {
+        textLines = "لا توجد بيانات خبرة كتابية مسجلة.";
       }
 
-      const label = scopeLabel(scope); // مثل 'الإجمالي', 'اليومي'
-      const lines = topUsers.map((doc, idx) => {
-        // نضمن أن حقول XP الخاصة بـ doc يتم إعادة تعيينها قبل عرضها
-        // هذا ليس ضروريًا هنا لأن `resetIfNeeded` يتم استدعاؤه مرة واحدة في بداية `execute`
-        // و`resetXpScopes` يتم استدعاؤه عند منح الخبرة الفردية،
-        // ولكن للتأكيد على دقة البيانات المعروضة في اللوحة
-        const xpValue = doc[field] || 0;
-        return `**#${idx + 1}.** <@${doc.userId}> • XP \`${xpValue}\` • مستوى \`${doc.level}\``;
-      }).join('\n');
-
-      const embed = new EmbedBuilder()
+      const textEmbed = new EmbedBuilder()
         .setColor(0x0099ff)
-        .setTitle(`🏆 قائمة المتصدرين (${label}) في ${message.guild.name}`)
-        .setDescription(lines)
-        .setFooter({ text: `بطلب من ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+        .setTitle(`🏆 قائمة المتصدرين (كتابي - ${label}) في ${message.guild.name}`)
+        .setDescription(textLines)
+        .setFooter({ text: `بطلب من ${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
 
-      await message.reply({ embeds: [embed] });
+      // --- بناء لوحة المتصدرين الصوتية ---
+      let voiceLines = [];
+      if (topVoiceUsers.length > 0) {
+        voiceLines = topVoiceUsers.map((doc, idx) => {
+          const xpValue = doc.voice[voiceScopeField] || 0;
+          return `**#${idx + 1}.** <@${doc.userId}> • XP \`${xpValue}\` • مستوى \`${doc.voice.level}\``;
+        }).join('\n');
+      } else {
+        voiceLines = "لا توجد بيانات خبرة صوتية مسجلة.";
+      }
+
+      const voiceEmbed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`🏆 قائمة المتصدرين (صوتي - ${label}) في ${message.guild.name}`)
+        .setDescription(voiceLines)
+        .setFooter({ text: `بطلب من ${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+
+      // إرسال الردود في نفس القناة بدون mention
+      await message.channel.send({ embeds: [textEmbed] });
+      await message.channel.send({ embeds: [voiceEmbed] });
     }
   }
 };
