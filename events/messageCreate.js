@@ -11,19 +11,25 @@ const COOLDOWN = 60_000;
 const TEXT_EMOJI = '💬';
 const VOICE_EMOJI = '🔊';
 
-const PERIOD_FIELDS = {
-  total: { text: 'textXP', voice: 'voiceXP', label: 'لائحة متصدري نقاط السيرفر' },
-  day: { text: 'dailyTextXP', voice: 'dailyVoiceXP', label: 'لائحة متصدري نقاط اليوم' },
-  week: { text: 'weeklyTextXP', voice: 'weeklyVoiceXP', label: 'لائحة متصدري نقاط الأسبوع' },
-  month: { text: 'monthlyTextXP', voice: 'monthlyVoiceXP', label: 'لائحة متصدري نقاط الشهر' }
-};
+// --- لوحات المتصدرين منفصلة ---
+function createLeaderboardEmbed({ guild, author, title, emoji, data }) {
+  const lines = data.length
+    ? data
+        .map((entry, index) => `**#${index + 1}** | <@${entry.userId}> | **XP ${entry.xp}**`)
+        .join('\n')
+    : 'لا يوجد بيانات بعد.';
 
-function redPanel(text, title = null) {
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setDescription(`**${text}**`);
-  if (title) embed.setTitle(title);
-  return embed;
+  return new EmbedBuilder()
+    .setColor(0xE01B1B)
+    .setAuthor({
+      name: `${title} ${emoji}`,
+      iconURL: guild.iconURL({ size: 128 }) || undefined
+    })
+    .setDescription(lines)
+    .setFooter({
+      text: `${author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+      iconURL: author.displayAvatarURL({ size: 128 })
+    });
 }
 
 module.exports = {
@@ -35,31 +41,17 @@ module.exports = {
     const lower = content.toLowerCase();
     const tokens = lower.split(/\s+/);
 
-    // ===========================
-    // نظام التوب بدون برفكس
-    // ===========================
+    // ========= أوامر التوب بدون برفكس =========
     if (tokens[0] === 't') {
-      const args = tokens.slice(1);
-      let period = 'total';
-      let focus = 'all';
-
-      for (const arg of args) {
-        if (['day', 'week', 'month'].includes(arg)) period = arg;
-        if (['text', 'voice'].includes(arg)) focus = arg;
-      }
-
-      await handleTopCommand(message, period, focus);
-      return; // لا نضيف XP لرسائل الأمر
+      const type = tokens[1] === 'voice' ? 'voice' : 'text'; // الافتراضي Text
+      await handleSeparateLeaderboards(message, type);
+      return; // لا نضيف XP لهذه الرسالة
     }
 
-    // ===========================
-    // XP الكتابي + الليفل
-    // ===========================
+    // ========= نظام XP الكتابي + مستويات =========
     await addTextXP(message);
 
-    // ===========================
-    // نظام التكت
-    // ===========================
+    // ========= نظام التكت والدعم =========
     if (
       message.channel?.name?.startsWith(TICKET_PREFIX) &&
       message.member?.roles.cache.has(SUPPORT_ROLE_ID)
@@ -100,68 +92,56 @@ module.exports = {
   }
 };
 
-async function handleTopCommand(message, periodKey, focusKey) {
-  const period = PERIOD_FIELDS[periodKey] ?? PERIOD_FIELDS.total;
-  const focus = ['text', 'voice'].includes(focusKey) ? focusKey : 'all';
-
+// ===== لوحتا المتصدرين (كتابي/صوتي) =====
+async function handleSeparateLeaderboards(message, type) {
   const docs = await UserXP.find({ guildId: message.guild.id });
+
   if (!docs.length) {
-    await message.reply({ embeds: [redPanel('لا توجد بيانات بعد.')] });
+    const embed = createLeaderboardEmbed({
+      guild: message.guild,
+      author: message.author,
+      title: type === 'voice' ? 'أعلى صوتياً' : 'أعلى كتابياً',
+      emoji: type === 'voice' ? VOICE_EMOJI : TEXT_EMOJI,
+      data: []
+    });
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   await Promise.all(docs.map(doc => resetIfNeeded(doc)));
 
-  const leaderboard = docs
-    .map(doc => {
-      const textXP = doc[period.text] ?? 0;
-      const voiceXP = doc[period.voice] ?? 0;
-      const sortValue =
-        focus === 'text' ? textXP :
-        focus === 'voice' ? voiceXP :
-        textXP + voiceXP;
+  const field = type === 'voice' ? 'voiceXP' : 'textXP';
 
-      return {
-        userId: doc.userId,
-        text: textXP,
-        voice: voiceXP,
-        sortValue
-      };
-    })
-    .filter(entry => entry.sortValue > 0)
-    .sort((a, b) => b.sortValue - a.sortValue)
+  const leaderboard = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc[field] ?? 0
+    }))
+    .filter(entry => entry.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
     .slice(0, 5);
 
-  if (!leaderboard.length) {
-    await message.reply({ embeds: [redPanel('لا يوجد بيانات في هذا التصنيف.')] });
-    return;
-  }
+  const embed = createLeaderboardEmbed({
+    guild: message.guild,
+    author: message.author,
+    title: type === 'voice' ? 'أعلى صوتياً' : 'أعلى كتابياً',
+    emoji: type === 'voice' ? VOICE_EMOJI : TEXT_EMOJI,
+    data: leaderboard
+  });
 
-  const focusLabel =
-    focus === 'text' ? ' (ترتيب كتابي)' :
-    focus === 'voice' ? ' (ترتيب صوتي)' : '';
-
-  const description = leaderboard
-    .map((entry, index) =>
-      `#${index + 1} | <@${entry.userId}>  ${TEXT_EMOJI} ${entry.text}  ${VOICE_EMOJI} ${entry.voice}`
-    )
-    .join('\n');
-
-  const embed = new EmbedBuilder()
-    .setColor(0xE01B1B)
-    .setAuthor({
-      name: `${period.label}${focusLabel}`,
-      iconURL: message.guild.iconURL({ size: 128 }) ?? undefined
-    })
-    .setDescription(description)
-    .setFooter({
-      text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
-      iconURL: message.author.displayAvatarURL({ size: 128 })
-    });
-
-  await message.channel.send({ embeds: [embed] });
+  await message.reply({ embeds: [embed] });
 }
 
+// ===== بنل أحمر عام =====
+function redPanel(text, title = null) {
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+  if (title) embed.setTitle(title);
+  return embed;
+}
+
+// ===== نظام XP الكتابي =====
 async function addTextXP(message) {
   let data = await UserXP.findOne({
     guildId: message.guild.id,
