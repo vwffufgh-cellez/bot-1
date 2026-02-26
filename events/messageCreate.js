@@ -10,7 +10,7 @@ const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
 // إعدادات نظام التحذيرات
-const WARN_LOG_CHANNEL_ID = ''; // ضع آيدي قناة اللوغ هنا (اختياري). اتركه فارغ لتعطيله
+const WARN_LOG_CHANNEL_ID = '1463931942058852399'; // ضع آيدي قناة اللوغ هنا (اختياري). اتركه فارغ لتعطيله
 const DM_USER_ON_WARN = true;
 const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
 
