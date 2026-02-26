@@ -1,32 +1,27 @@
-const { Schema, model } = require('mongoose');
+// models/UserXP.js
+const mongoose = require('mongoose');
 
-const userXPSchema = new Schema({
+const UserXPSchema = new mongoose.Schema({
   guildId: { type: String, required: true },
   userId: { type: String, required: true },
+  
+  // الخبرة الكلية للمستوى
+  xp: { type: Number, default: 0 },
+  level: { type: Number, default: 0 },
 
-  textXP: { type: Number, default: 0 },
-  voiceXP: { type: Number, default: 0 },
+  // الخبرة للنطاقات الزمنية (يومي، أسبوعي، شهري)
+  dailyXp: { type: Number, default: 0 },
+  weeklyXp: { type: Number, default: 0 },
+  monthlyXp: { type: Number, default: 0 },
 
-  dailyTextXP: { type: Number, default: 0 },
-  dailyVoiceXP: { type: Number, default: 0 },
-
-  weeklyTextXP: { type: Number, default: 0 },
-  weeklyVoiceXP: { type: Number, default: 0 },
-
-  monthlyTextXP: { type: Number, default: 0 },
-  monthlyVoiceXP: { type: Number, default: 0 },
-
-  lastDailyReset: { type: Date, default: null },
-  lastWeeklyReset: { type: Date, default: null },
-  lastMonthlyReset: { type: Date, default: null }
+  // الطوابع الزمنية لآخر إعادة تعيين لكل نطاق (لتتبع متى يجب إعادة التعيين التالية)
+  // تخزن كأرقام (timestamps) لسهولة المقارنة مع startOfDay/startOfWeek/startOfMonth
+  dailyResetAt: { type: Number, default: 0 },
+  weeklyResetAt: { type: Number, default: 0 },
+  monthlyResetAt: { type: Number, default: 0 },
 });
 
-userXPSchema.statics.getOrCreate = async function (guildId, userId) {
-  let doc = await this.findOne({ guildId, userId });
-  if (!doc) {
-    doc = await this.create({ guildId, userId });
-  }
-  return doc;
-};
+// للتأكد من أن كل مستخدم لديه سجل واحد فقط لكل سيرفر
+UserXPSchema.index({ guildId: 1, userId: 1 }, { unique: true });
 
-module.exports = model('UserXP', userXPSchema);
+module.exports = mongoose.model('UserXP', UserXPSchema);
