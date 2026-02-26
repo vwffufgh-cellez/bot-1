@@ -1,4 +1,4 @@
-const { Events, EmbedBuilder } = require('discord.js');
+const { EmbedBuilder } = require('discord.js');
 const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
@@ -11,44 +11,65 @@ const COOLDOWN = 60_000;
 const TEXT_EMOJI = '💬';
 const VOICE_EMOJI = '🔊';
 
-const PERIOD_FIELDS = {
-  total: { text: 'textXP', voice: 'voiceXP', label: 'لائحة متصدري نقاط السيرفر' },
-  day: { text: 'dailyTextXP', voice: 'dailyVoiceXP', label: 'لائحة متصدري نقاط اليوم' },
-  week: { text: 'weeklyTextXP', voice: 'weeklyVoiceXP', label: 'لائحة متصدري نقاط الأسبوع' },
-  month: { text: 'monthlyTextXP', voice: 'monthlyVoiceXP', label: 'لائحة متصدري نقاط الشهر' }
-};
+// لوحة متصدرين موحدة بالنصوص والصوت معاً
+function createUnifiedLeaderboardEmbed({ guild, author, textData, voiceData }) {
+  const textLines = textData.length
+    ? textData
+        .map((entry, index) => `**#${index + 1}** | <@${entry.userId}> | **XP ${entry.xp}**`)
+        .join('\n')
+    : 'لا يوجد بيانات بعد.';
 
-function createRedEmbed(text, title = null) {
-  const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
-  if (title) embed.setTitle(title);
-  return embed;
+  const voiceLines = voiceData.length
+    ? voiceData
+        .map((entry, index) => `**#${index + 1}** | <@${entry.userId}> | **XP ${entry.xp}**`)
+        .join('\n')
+    : 'لا يوجد بيانات بعد.';
+
+  return new EmbedBuilder()
+    .setColor(0xE01B1B)
+    .setTitle('📊 قائمة المتصدرين')
+    .setAuthor({
+      name: guild.name,
+      iconURL: guild.iconURL({ size: 128 }) || undefined
+    })
+    .addFields(
+      {
+        name: `${TEXT_EMOJI} أعلى كتابياً`,
+        value: textLines,
+        inline: false
+      },
+      {
+        name: `${VOICE_EMOJI} أعلى صوتياً`,
+        value: voiceLines,
+        inline: false
+      }
+    )
+    .setFooter({
+      text: `${author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+      iconURL: author.displayAvatarURL({ size: 128 })
+    });
 }
 
 module.exports = {
-  name: Events.MessageCreate,
+  name: 'messageCreate',
   async execute(message) {
     if (!message.guild || message.author.bot) return;
 
     const content = message.content.trim();
-    const tokens = content.toLowerCase().split(/\s+/);
-    const commandName = tokens[0];
+    const lower = content.toLowerCase();
+    const tokens = lower.split(/\s+/);
 
-    if (commandName === 't') {
-      const args = tokens.slice(1);
-      let period = 'total';
-      let focus = 'all';
-
-      for (const arg of args) {
-        if (['day', 'week', 'month'].includes(arg)) period = arg;
-        if (['text', 'voice'].includes(arg)) focus = arg;
-      }
-
-      await handleTopCommand(message, period, focus);
-      return; // لا نضيف XP لرسائل الأمر
+    // ========= أمر التوب الموحد (t أو t week أو t month) =========
+    if (tokens === 't') {
+      const period = tokens[1]; // week, month, أو undefined للعام
+      await handleUnifiedLeaderboard(message, period);
+      return;
     }
 
+    // ========= نظام XP الكتابي + مستويات =========
     await addTextXP(message);
 
+    // ========= نظام التكت والدعم =========
     if (
       message.channel?.name?.startsWith(TICKET_PREFIX) &&
       message.member?.roles.cache.has(SUPPORT_ROLE_ID)
@@ -65,82 +86,99 @@ module.exports = {
           adminId: message.author.id
         });
 
-        await AdminStats.findOneAndUpdate(
-          { guildId: message.guild.id, adminId: message.author.id },
-          { $inc: { ticketsClaimed: 1, xp: 5 } },
-          { upsert: true }
-        );
+        let stats = await AdminStats.findOne({
+          guildId: message.guild.id,
+          adminId: message.author.id
+        });
+
+        if (!stats) {
+          stats = new AdminStats({
+            guildId: message.guild.id,
+            adminId: message.author.id
+          });
+        }
+
+        stats.ticketsClaimed += 1;
+        stats.xp += 5;
+        await stats.save();
 
         await message.channel.send({
-          embeds: [createRedEmbed(`Ticket claimed by ${message.author.username}`)]
+          embeds: [redPanel(`Ticket claimed by ${message.author.username}`)]
         });
       }
     }
   }
 };
 
-async function handleTopCommand(message, periodKey, focusKey) {
-  const period = PERIOD_FIELDS[periodKey] ?? PERIOD_FIELDS.total;
-  const focus = ['text', 'voice'].includes(focusKey) ? focusKey : 'all';
-
+// ===== لوحة موحدة (Text + Voice) =====
+async function handleUnifiedLeaderboard(message, period) {
   const docs = await UserXP.find({ guildId: message.guild.id });
+
   if (!docs.length) {
-    await message.reply({ embeds: [createRedEmbed('لا توجد بيانات بعد.')] });
+    const embed = createUnifiedLeaderboardEmbed({
+      guild: message.guild,
+      author: message.author,
+      textData: [],
+      voiceData: []
+    });
+    await message.reply({ embeds: [embed] });
     return;
   }
 
   await Promise.all(docs.map(doc => resetIfNeeded(doc)));
 
-  const leaderboard = docs
-    .map(doc => {
-      const textXP = doc[period.text] ?? 0;
-      const voiceXP = doc[period.voice] ?? 0;
-      const sortValue =
-        focus === 'text' ? textXP :
-        focus === 'voice' ? voiceXP :
-        textXP + voiceXP;
+  let textField = 'textXP';
+  let voiceField = 'voiceXP';
 
-      return {
-        userId: doc.userId,
-        text: textXP,
-        voice: voiceXP,
-        sortValue
-      };
-    })
-    .filter(entry => entry.sortValue > 0)
-    .sort((a, b) => b.sortValue - a.sortValue)
-    .slice(0, 5);
-
-  if (!leaderboard.length) {
-    await message.reply({ embeds: [createRedEmbed('لا يوجد بيانات في هذا التصنيف.')] });
-    return;
+  if (period === 'week') {
+    textField = 'weeklyTextXP';
+    voiceField = 'weeklyVoiceXP';
+  } else if (period === 'month') {
+    textField = 'monthlyTextXP';
+    voiceField = 'monthlyVoiceXP';
+  } else if (period === 'day') {
+    textField = 'dailyTextXP';
+    voiceField = 'dailyVoiceXP';
   }
 
-  const focusLabel =
-    focus === 'text' ? ' (ترتيب كتابي)' :
-    focus === 'voice' ? ' (ترتيب صوتي)' : '';
+  const textLeaderboard = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc[textField] ?? 0
+    }))
+    .filter(entry => entry.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
 
-  const description = leaderboard
-    .map((entry, index) => 
-      `**#${index + 1}** | <@${entry.userId}> | **XP ${entry.text}** ${TEXT_EMOJI} | **XP ${entry.voice}** ${VOICE_EMOJI}`
-    )
-    .join('\n');
+  const voiceLeaderboard = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc[voiceField] ?? 0
+    }))
+    .filter(entry => entry.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
 
-  const embed = new EmbedBuilder()
-    .setColor(0xE01B1B)
-    .setAuthor({
-      name: `${period.label}${focusLabel}`,
-      iconURL: message.guild.iconURL({ size: 128 }) ?? undefined
-    })
-    .setDescription(description)
-    .setFooter({
-      text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
-      iconURL: message.author.displayAvatarURL({ size: 128 })
-    });
+  const embed = createUnifiedLeaderboardEmbed({
+    guild: message.guild,
+    author: message.author,
+    textData: textLeaderboard,
+    voiceData: voiceLeaderboard
+  });
 
-  await message.channel.send({ embeds: [embed] });
+  await message.reply({ embeds: [embed] });
 }
 
+// ===== بنل أحمر عام =====
+function redPanel(text, title = null) {
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+  if (title) embed.setTitle(title);
+  return embed;
+}
+
+// ===== نظام XP الكتابي =====
 async function addTextXP(message) {
   let data = await UserXP.findOne({
     guildId: message.guild.id,
@@ -176,7 +214,7 @@ async function addTextXP(message) {
   if (total >= required) {
     data.level += 1;
     await message.channel.send({
-      embeds: [createRedEmbed(`Level Up To ${data.level}`)]
+      embeds: [redPanel(`Level Up To ${data.level}`)]
     });
   }
 
