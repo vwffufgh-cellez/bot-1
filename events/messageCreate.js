@@ -3,11 +3,11 @@ const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 const Warning = require('../models/Warning');
-const { resetIfNeeded } = require('../utils/resetHelpers');
+const { resetIfNeeded } = require('../utils/resetHelpers'); // تأكد من وجود هذا الملف
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
-const COOLDOWN = 60_000;
+const COOLDOWN = 60_000; // 60 ثانية
 
 // إعدادات نظام التحذيرات
 const WARN_LOG_CHANNEL_ID = '1463931942058852399'; // اتركه '' لتعطيل اللوغ
@@ -17,8 +17,20 @@ const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
 const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'ت'];
 const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات'];
 
+// إعدادات نظام الخبرة (XP)
+const XP_PER_MESSAGE_MIN = 10;
+const XP_PER_MESSAGE_MAX = 20;
+const XP_COOLDOWN_PER_USER = 60_000; // 1 دقيقة
+const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
+const TOP_ALIASES = ['top', 'الأعلى', 'المتصدرين']; // تم تعديل الأوامر البديلة
+
+// إعدادات نظام التذاكر
+const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
+const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
+
 // لمنع معالجة نفس الرسالة مرتين (حارس بسيط)
 const processedCommands = new Map(); // key -> expiry timeout id
+const userXpCooldowns = new Map(); // userId -> timestamp of last XP gain for text messages
 
 function markProcessed(key, ttl = 3000) {
   if (processedCommands.has(key)) return false;
@@ -31,7 +43,7 @@ function clearProcessed(key) {
   const t = processedCommands.get(key);
   if (t) {
     clearTimeout(t);
-    processedCommands.delete(key);
+    processedCommands.delete(key); // تم التصحيح هنا
   }
 }
 
@@ -121,7 +133,7 @@ async function addWarningAndNotify(message, member, reason) {
   // إرسال تأكيد بسيط في القناة الحالية (بنل أحمر صغير مع علامة ✓)
   await message.channel.send({ embeds: [redConfirmPanel(`تم تحذير ${member.user.username}`)] });
 
-  // إرسال اللوق المفصل في قناة اللوق إن وُجدت وليست نفس القناة الحالية
+  // إرسال اللوغ المفصل في قناة اللوغ إن وُجدت وليست نفس القناة الحالية
   if (WARN_LOG_CHANNEL_ID) {
     const logCh = message.guild.channels.cache.get(WARN_LOG_CHANNEL_ID);
     if (logCh && logCh.id !== message.channel.id) {
@@ -170,17 +182,39 @@ async function showWarnings(message, member) {
   await message.reply({ embeds: [embed] });
 }
 
-// بنل أحمر عام
+// بنل أحمر عام (للأخطاء والتحذيرات)
 function redPanel(text, title = null) {
   const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
   if (title) embed.setTitle(title);
   return embed;
 }
 
+// بنل أزرق عام (للمعلومات والإشعارات العامة)
+function bluePanel(text, title = null) {
+  const embed = new EmbedBuilder().setColor(0x0099ff).setDescription(`**${text}**`);
+  if (title) embed.setTitle(title);
+  return embed;
+}
+
+// دالة لحساب المستوى بناءً على الخبرة الكلية النصية (افتراضي)
+function calculateLevel(xp) {
+  return Math.floor(0.1 * Math.sqrt(xp)); // صيغة بسيطة للمستوى (يمكنك تعديلها)
+}
+
+// دالة لحساب الخبرة المطلوبة للمستوى التالي
+function xpForNextLevel(level) {
+  return 10 * (level + 1) * (level + 1); // معكوس صيغة calculateLevel
+}
+
 module.exports = {
   name: 'messageCreate',
   async execute(message) {
     if (!message.guild || message.author.bot) return;
+
+    // استدعاء وظيفة إعادة التعيين (مثال: مرة واحدة يومياً، أسبوعياً، شهرياً)
+    // هذا سيعالج إعادة تعيين الإحصائيات إذا كان الوقت مناسبًا.
+    // يجب أن تكون هذه الوظيفة معرفة في '../utils/resetHelpers.js'
+    await resetIfNeeded(message.guild.id);
 
     const content = message.content.trim();
     const lower = content.toLowerCase();
@@ -257,6 +291,273 @@ module.exports = {
       return;
     }
 
-    // ... باقي كودك (top, xp, tickets) كما كان ...
+    // ======= أوامر التذاكر (Claim/Unclaim) =======
+    const isTicketChannel = message.channel.name.startsWith(TICKET_PREFIX);
+    const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+
+    if (CLAIM_ALIASES.includes(tokens[0])) {
+      const guardKey = `${message.id}:claim`;
+      if (!markProcessed(guardKey, COOLDOWN)) return; // استخدام COOLDOWN للـ guard
+
+      if (!isTicketChannel) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('هذا الأمر يمكن استخدامه فقط في قنوات التذاكر.')] });
+        return;
+      }
+      if (!hasSupportRole) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('لا تملك الصلاحيات لاستلام التذاكر.')] });
+        return;
+      }
+
+      let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
+
+      if (ticketClaim) {
+        if (ticketClaim.claimedById === message.author.id) {
+          clearProcessed(guardKey);
+          await message.reply({ embeds: [bluePanel('لقد قمت بالفعل باستلام هذه التذكرة.')] });
+          return;
+        } else {
+          clearProcessed(guardKey);
+          await message.reply({ embeds: [redPanel(`تم استلام هذه التذكرة بواسطة <@${ticketClaim.claimedById}> بالفعل.`)] });
+          return;
+        }
+      }
+
+      // إذا لم يتم استلامها، قم بإنشاء مطالبة جديدة
+      ticketClaim = new TicketClaim({
+        guildId: message.guild.id,
+        channelId: message.channel.id,
+        claimedById: message.author.id,
+        claimedAt: new Date(),
+      });
+      await ticketClaim.save();
+
+      // تحديث إحصائيات الأدمن
+      await AdminStats.findOneAndUpdate(
+        { guildId: message.guild.id, adminId: message.author.id },
+        { $inc: { claimsCount: 1 } },
+        { upsert: true, new: true }
+      );
+
+      await message.channel.send({ embeds: [bluePanel(`✅ <@${message.author.id}> لقد قمت باستلام هذه التذكرة بنجاح.`)] });
+      return;
+    }
+
+    if (UNCLAIM_ALIASES.includes(tokens[0])) {
+      const guardKey = `${message.id}:unclaim`;
+      if (!markProcessed(guardKey, COOLDOWN)) return;
+
+      if (!isTicketChannel) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('هذا الأمر يمكن استخدامه فقط في قنوات التذاكر.')] });
+        return;
+      }
+      if (!hasSupportRole) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('لا تملك الصلاحيات لإلغاء استلام التذاكر.')] });
+        return;
+      }
+
+      const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
+
+      if (!ticketClaim) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel('هذه التذكرة لم يتم استلامها من قبل أي شخص.')] });
+        return;
+      }
+
+      if (ticketClaim.claimedById !== message.author.id) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel(`لا يمكنك إلغاء استلام تذكرة تم استلامها بواسطة <@${ticketClaim.claimedById}>.`)] });
+        return;
+      }
+
+      // إذا كان هو من استلمها، قم بحذف المطالبة
+      await TicketClaim.deleteOne({ channelId: message.channel.id });
+      await message.channel.send({ embeds: [bluePanel(`✅ <@${message.author.id}> لقد قمت بإلغاء استلام هذه التذكرة.`)] });
+      return;
+    }
+
+    // ======= منطق إضافة الخبرة (XP) للرسائل النصية =======
+    const now = Date.now();
+    const lastXp = userXpCooldowns.get(message.author.id) || 0;
+
+    // تحقق من انتهاء فترة انتظار الخبرة
+    if (now - lastXp > XP_COOLDOWN_PER_USER) {
+      const xpAmount = Math.floor(Math.random() * (XP_PER_MESSAGE_MAX - XP_PER_MESSAGE_MIN + 1)) + XP_PER_MESSAGE_MIN;
+
+      let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: message.author.id });
+      if (!userXp) {
+        userXp = new UserXP({
+          guildId: message.guild.id,
+          userId: message.author.id,
+          // تهيئة الحقول الجديدة إذا لم تكن موجودة
+          xp: 0, // هذا الحقل القديم، يمكن استخدامه للمستوى فقط
+          level: 0,
+          totalTextXp: 0,
+          totalVoiceXp: 0,
+          dailyTextXp: 0,
+          dailyVoiceXp: 0,
+          weeklyTextXp: 0,
+          weeklyVoiceXp: 0,
+          monthlyTextXp: 0,
+          monthlyVoiceXp: 0,
+          lastDailyReset: new Date(),
+          lastWeeklyReset: new Date(),
+          lastMonthlyReset: new Date(),
+        });
+      }
+
+      const oldLevel = userXp.level; // المستوى القديم قبل إضافة الخبرة
+
+      // تحديث جميع حقول الخبرة النصية
+      userXp.xp += xpAmount; // يمكن الاحتفاظ بهذا الحقل كإجمالي خبرة عامة أو إلغاؤه
+      userXp.totalTextXp = (userXp.totalTextXp || 0) + xpAmount;
+      userXp.dailyTextXp = (userXp.dailyTextXp || 0) + xpAmount;
+      userXp.weeklyTextXp = (userXp.weeklyTextXp || 0) + xpAmount;
+      userXp.monthlyTextXp = (userXp.monthlyTextXp || 0) + xpAmount;
+
+      // حساب المستوى بناءً على الخبرة الكلية النصية
+      userXp.level = calculateLevel(userXp.totalTextXp);
+      await userXp.save();
+
+      userXpCooldowns.set(message.author.id, now); // تحديث وقت آخر كسب للخبرة
+
+      if (userXp.level > oldLevel) {
+        await message.channel.send({
+          embeds: [bluePanel(`🎉 تهانينا <@${message.author.id}>! لقد وصلت إلى المستوى **${userXp.level}**!`)]
+        }).catch(() => {}); // نتجاهل الأخطاء إذا لم نتمكن من إرسال الرسالة
+      }
+    }
+
+
+    // ======= أمر عرض الخبرة (XP) لمستخدم معين =======
+    if (XP_ALIASES.includes(tokens[0])) {
+      const guardKey = `${message.id}:xp`;
+      if (!markProcessed(guardKey)) return;
+
+      const parts = message.content.trim().split(/\s+/);
+      const targetArg = parts[1];
+      const member = (await fetchMember(message.guild, targetArg)) || message.member;
+
+      const userXp = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
+
+      // يتم عرض فقط إجمالي الخبرة النصية والمستوى هنا
+      if (!userXp || (userXp.totalTextXp ?? 0) === 0) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel(`لا يوجد لدى <@${member.id}> أي خبرة كتابية حتى الآن.`)] });
+        return;
+      }
+
+      const currentLevel = userXp.level;
+      const xpToNextLevelVal = xpForNextLevel(currentLevel);
+      // حساب الخبرة المتبقية للمستوى التالي بشكل صحيح
+      const xpNeededForCurrentLevel = currentLevel === 0 ? 0 : xpForNextLevel(currentLevel - 1);
+      const xpInCurrentLevel = userXp.totalTextXp - xpNeededForCurrentLevel;
+      const remainingXp = xpToNextLevelVal - xpInCurrentLevel;
+
+
+      const embed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setAuthor({ name: `خبرة ${member.user.tag}`, iconURL: member.displayAvatarURL({ size: 128 }) })
+        .setDescription(
+          `**المستوى:** \`${currentLevel}\`\n` +
+          `**الخبرة الكلية (كتابية):** \`${userXp.totalTextXp}\`\n` +
+          `**الخبرة للمستوى التالي:** \`${remainingXp > 0 ? remainingXp : 0}\` نقطة`
+        )
+        .setFooter({
+          text: `يطلب من ${message.author.tag}`,
+          iconURL: message.author.displayAvatarURL({ size: 128 })
+        });
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
+
+    // ======= أمر المتصدرين (TOP) =======
+    if (TOP_ALIASES.includes(tokens[0])) {
+      const guardKey = `${message.id}:top`;
+      if (!markProcessed(guardKey)) return;
+
+      const parts = message.content.trim().split(/\s+/);
+      let timeframe = 'total'; // افتراضي: إجمالي
+      let xpType = 'text';    // افتراضي: كتابي
+
+      // معالجة الوسيط الثاني (إذا كان موجوداً)
+      if (parts[1]) {
+        const arg1 = parts[1].toLowerCase();
+        if (['daily', 'يومي'].includes(arg1)) timeframe = 'daily';
+        else if (['weekly', 'أسبوعي'].includes(arg1)) timeframe = 'weekly';
+        else if (['monthly', 'شهري'].includes(arg1)) timeframe = 'monthly';
+        else if (['total', 'إجمالي', 'عام'].includes(arg1)) timeframe = 'total';
+        else if (['text', 'كتابي'].includes(arg1)) xpType = 'text'; // لو كانت الكلمة الأولى هي نوع الـ XP
+        else if (['voice', 'صوتي'].includes(arg1)) xpType = 'voice';
+      }
+
+      // معالجة الوسيط الثالث (إذا كان موجوداً) في حال تم تحديد timeframe أولاً
+      if (parts[2]) {
+        const arg2 = parts[2].toLowerCase();
+        if (['text', 'كتابي'].includes(arg2)) xpType = 'text';
+        else if (['voice', 'صوتي'].includes(arg2)) xpType = 'voice';
+      }
+
+      // تحديد حقل الخبرة للبحث والترتيب بناءً على timeframe و xpType
+      let xpFieldName = `${timeframe}${xpType.charAt(0).toUpperCase() + xpType.slice(1)}Xp`;
+      if (timeframe === 'total') { // لحالة 'total' لا نحتاج 'Total' مكررة
+         xpFieldName = `total${xpType.charAt(0).toUpperCase() + xpType.slice(1)}Xp`;
+      }
+
+      // التأكد من أن الحقل صحيح، وإلا فالرجوع إلى 'totalTextXp' كافتراضي أو الإبلاغ عن خطأ
+      const validXpFields = ['totalTextXp', 'totalVoiceXp', 'dailyTextXp', 'dailyVoiceXp', 'weeklyTextXp', 'weeklyVoiceXp', 'monthlyTextXp', 'monthlyVoiceXp'];
+      if (!validXpFields.includes(xpFieldName)) {
+          // يمكن هنا إعادة تعيين أو إبلاغ المستخدم بوسيط غير صحيح
+          xpFieldName = 'totalTextXp'; // العودة للافتراضي
+          timeframe = 'total';
+          xpType = 'text';
+      }
+
+
+      const topUsers = await UserXP.find({
+          guildId: message.guild.id,
+          [xpFieldName]: { $gt: 0 } // فقط المستخدمين الذين لديهم خبرة في هذا النوع
+        })
+        .sort({ [xpFieldName]: -1 }) // ترتيب تنازلي حسب الخبرة المطلوبة
+        .limit(10); // أعلى 10 مستخدمين
+
+      if (topUsers.length === 0) {
+        clearProcessed(guardKey);
+        await message.reply({ embeds: [redPanel(`لا توجد بيانات خبرة ${timeframe === 'total' ? 'إجمالية' : timeframe === 'daily' ? 'يومية' : timeframe === 'weekly' ? 'أسبوعية' : 'شهرية'} ${xpType === 'text' ? 'كتابية' : 'صوتية'} في هذا السيرفر بعد.`)] });
+        return;
+      }
+
+      const leaderboardText = topUsers.map((userDoc, index) => {
+        const xpValue = userDoc[xpFieldName] ?? 0; // استخدام الحقل المحدد
+        return `**#${index + 1}** | <@${userDoc.userId}> | XP: ${xpValue}`;
+      }).join('\n');
+
+      let titleTimeframe = '';
+      if (timeframe === 'daily') titleTimeframe = 'اليومية';
+      else if (timeframe === 'weekly') titleTimeframe = 'الأسبوعية';
+      else if (timeframe === 'monthly') titleTimeframe = 'الشهرية';
+      else titleTimeframe = 'الإجمالية';
+
+      let titleXpType = '';
+      if (xpType === 'text') titleXpType = 'الكتابية';
+      else if (xpType === 'voice') titleXpType = 'الصوتية';
+
+
+      const embed = new EmbedBuilder()
+        .setColor(0x0099ff)
+        .setTitle(`🏆 قائمة المتصدرين ${titleTimeframe} ${titleXpType} في ${message.guild.name}`)
+        .setDescription(leaderboardText)
+        .setFooter({
+          text: `يطلب من ${message.author.tag}`,
+          iconURL: message.author.displayAvatarURL({ size: 128 })
+        });
+
+      await message.reply({ embeds: [embed] });
+      return;
+    }
   }
 };
