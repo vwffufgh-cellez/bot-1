@@ -1,11 +1,14 @@
-const mongoose = require('mongoose');
+const { Schema, model } = require('mongoose');
 
-const userSchema = new mongoose.Schema({
-  guildId: { type: String, index: true },
-  userId: { type: String, index: true },
+const userXPSchema = new Schema({
+  guildId: { type: String, required: true },
+  userId: { type: String, required: true },
 
   textXP: { type: Number, default: 0 },
   voiceXP: { type: Number, default: 0 },
+
+  dailyTextXP: { type: Number, default: 0 },
+  dailyVoiceXP: { type: Number, default: 0 },
 
   weeklyTextXP: { type: Number, default: 0 },
   weeklyVoiceXP: { type: Number, default: 0 },
@@ -13,8 +16,17 @@ const userSchema = new mongoose.Schema({
   monthlyTextXP: { type: Number, default: 0 },
   monthlyVoiceXP: { type: Number, default: 0 },
 
-  level: { type: Number, default: 0 },
-  lastMessage: { type: Date, default: null }
-}, { timestamps: true });
+  lastDailyReset: { type: Date, default: null },
+  lastWeeklyReset: { type: Date, default: null },
+  lastMonthlyReset: { type: Date, default: null }
+});
 
-module.exports = mongoose.model('UserXP', userSchema);
+userXPSchema.statics.getOrCreate = async function (guildId, userId) {
+  let doc = await this.findOne({ guildId, userId });
+  if (!doc) {
+    doc = await this.create({ guildId, userId });
+  }
+  return doc;
+};
+
+module.exports = model('UserXP', userXPSchema);
