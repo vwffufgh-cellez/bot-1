@@ -9,7 +9,7 @@ const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
 // ==================== لوحة المتصدرين الموحدة ====================
-async function handleCombinedLeaderboard(message) {
+async function handleCombinedLeaderboard(message, type = 'total', period = 'all') {
   const docs = await UserXP.find({ guildId: message.guild.id });
   
   // جلب بيانات المستخدم الحالي
@@ -21,13 +21,15 @@ async function handleCombinedLeaderboard(message) {
   // تطبيق resets إذا كان عندك في resetHelpers
   await Promise.all(docs.map(doc => resetIfNeeded(doc)));
   
+  // تحديد نوع الـ XP حسب النوع والفترة
+  let xpField = getTypeXpField(type, period);
+
   // استخراج التوب الكتابي
   const textTop = docs
     .map(doc => ({
       userId: doc.userId,
-      xp: doc.textXP ?? 0
+      xp: doc[xpField] ?? 0
     }))
-    .filter(x => x.xp > 0)
     .sort((a, b) => b.xp - a.xp)
     .slice(0, 5);
 
@@ -35,40 +37,64 @@ async function handleCombinedLeaderboard(message) {
   const voiceTop = docs
     .map(doc => ({
       userId: doc.userId,
-      xp: doc.voiceXP ?? 0
+      xp: doc[xpField.replace('text', 'voice')] ?? 0
     }))
-    .filter(x => x.xp > 0)
     .sort((a, b) => b.xp - a.xp)
     .slice(0, 5);
 
   // --- تنسيق كتابي ---
   let textLines = '';
-  if (textTop.length > 0) {
-    textLines = textTop
-      .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
-      .join('\n');
-  } else if (userData?.textXP && userData.textXP > 0) {
-    textLines = `**#1** | <@${message.author.id}> \| **XP: ${userData.textXP}**`;
+  const authorTextXP = textTop.find(e => e.userId === message.author.id);
+  if (authorTextXP && authorTextXP.xp > 0) {
+    const rank = textTop.findIndex(e => e.userId === message.author.id) + 1;
+    textLines = `**#${rank}** | <@${message.author.id}> \| **XP: ${authorTextXP.xp}**`;
+    // إضافة باقي المستخدمين
+    const others = textTop.filter(e => e.userId !== message.author.id).slice(0, 4);
+    if (others.length > 0) {
+      textLines += '\n' + others
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .join('\n');
+    }
   } else {
     textLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
+    // إضافة بقية المستخدمين إن وجدوا
+    const others = textTop.filter(e => e.userId !== message.author.id && e.xp > 0).slice(0, 4);
+    if (others.length > 0) {
+      textLines += '\n' + others
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .join('\n');
+    }
   }
 
   // --- تنسيق صوتي ---
   let voiceLines = '';
-  if (voiceTop.length > 0) {
-    voiceLines = voiceTop
-      .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
-      .join('\n');
-  } else if (userData?.voiceXP && userData.voiceXP > 0) {
-    voiceLines = `**#1** | <@${message.author.id}> \| **XP: ${userData.voiceXP}**`;
+  const authorVoiceXP = voiceTop.find(e => e.userId === message.author.id);
+  if (authorVoiceXP && authorVoiceXP.xp > 0) {
+    const rank = voiceTop.findIndex(e => e.userId === message.author.id) + 1;
+    voiceLines = `**#${rank}** | <@${message.author.id}> \| **XP: ${authorVoiceXP.xp}**`;
+    const others = voiceTop.filter(e => e.userId !== message.author.id).slice(0, 4);
+    if (others.length > 0) {
+      voiceLines += '\n' + others
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .join('\n');
+    }
   } else {
     voiceLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
+    const others = voiceTop.filter(e => e.userId !== message.author.id && e.xp > 0).slice(0, 4);
+    if (others.length > 0) {
+      voiceLines += '\n' + others
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .join('\n');
+    }
   }
+
+  // عنوان القسم
+  const sectionTitle = getPeriodSectionTitle(period);
 
   const embed = new EmbedBuilder()
     .setColor(0xE01B1B)
     .setAuthor({
-      name: 'قائمة متصدرين السيرفر',
+      name: `قائمة متصدرين السيرفر ${sectionTitle}`,
       iconURL: message.guild.iconURL({ size: 128 }) || undefined
     })
     .addFields(
@@ -81,6 +107,24 @@ async function handleCombinedLeaderboard(message) {
     });
 
   await message.reply({ embeds: [embed] });
+}
+
+// ------------------- دوال مساعدة -------------------
+function getTypeXpField(type, period) {
+  if (period !== 'all') {
+    return `${period === 'day' ? 'daily' : period === 'week' ? 'weekly' : 'monthly'}TextXP`;
+  }
+  return type === 'voice' ? 'voiceXP' : 'textXP';
+}
+
+function getPeriodSectionTitle(period) {
+  const titles = {
+    all: '',
+    day: 'اليوم',
+    week: 'الأسبوع',
+    month: 'الشهر'
+  };
+  return titles[period] ? ` (${titles[period]})` : '';
 }
 
 // ==================== بنل أحمر عام ====================
@@ -103,8 +147,37 @@ module.exports = {
 
     // ==================== أمر التوب بدون برفكس ====================
     if (tokens[0] === 't' || tokens[0] === 'top') {
-      await handleCombinedLeaderboard(message);
-      return; // لا نضيف XP لهذه الرسالة
+      const secondToken = tokens[1];
+      let type = 'text';
+      let period = 'all';
+
+      if (secondToken) {
+        if (['day', 'd'].includes(secondToken)) {
+          type = 'text';
+          period = 'day';
+        } else if (['week', 'w'].includes(secondToken)) {
+          type = 'text';
+          period = 'week';
+        } else if (['month', 'm'].includes(secondToken)) {
+          type = 'text';
+          period = 'month';
+        } else if (['v', 'voice'].includes(secondToken)) {
+          type = 'voice';
+          period = 'all';
+        } else if ((secondToken.startsWith('v') && ['vday', 'vd'].includes(secondToken))) {
+          type = 'voice';
+          period = 'day';
+        } else if ((secondToken.startsWith('v') && ['vweek', 'vw'].includes(secondToken))) {
+          type = 'voice';
+          period = 'week';
+        } else if ((secondToken.startsWith('v') && ['vmonth', 'vm'].includes(secondToken))) {
+          type = 'voice';
+          period = 'month';
+        }
+      }
+
+      await handleCombinedLeaderboard(message, type, period);
+      return;
     }
 
     // ==================== نظام XP الكتابي + مستويات ====================
