@@ -11,8 +11,8 @@ const COOLDOWN = 60_000;
 // ==================== لوحة المتصدرين الموحدة ====================
 async function handleCombinedLeaderboard(message, type = 'total', period = 'all') {
   const docs = await UserXP.find({ guildId: message.guild.id });
-  
-  // جلب بيانات المستخدم الحالي
+
+  // جلب بيانات المستخدم الحالي (غير مستخدمة هنا لكن خليتها مثل ما كانت عندك)
   let userData = await UserXP.findOne({
     guildId: message.guild.id,
     userId: message.author.id
@@ -20,15 +20,16 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
 
   // تطبيق resets إذا كان عندك في resetHelpers
   await Promise.all(docs.map(doc => resetIfNeeded(doc)));
-  
-  // تحديد نوع الـ XP حسب النوع والفترة
-  let xpField = getTypeXpField(type, period);
+
+  // ✅ تحديد اسم الحقل لكل نوع بشكل صحيح (بدون replace)
+  const textField = getTypeXpField('text', period);
+  const voiceField = getTypeXpField('voice', period);
 
   // استخراج التوب الكتابي
   const textTop = docs
     .map(doc => ({
       userId: doc.userId,
-      xp: doc[xpField] ?? 0
+      xp: doc[textField] ?? 0
     }))
     .sort((a, b) => b.xp - a.xp)
     .slice(0, 5);
@@ -37,7 +38,7 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
   const voiceTop = docs
     .map(doc => ({
       userId: doc.userId,
-      xp: doc[xpField.replace('text', 'voice')] ?? 0
+      xp: doc[voiceField] ?? 0
     }))
     .sort((a, b) => b.xp - a.xp)
     .slice(0, 5);
@@ -47,21 +48,21 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
   const authorTextXP = textTop.find(e => e.userId === message.author.id);
   if (authorTextXP && authorTextXP.xp > 0) {
     const rank = textTop.findIndex(e => e.userId === message.author.id) + 1;
-    textLines = `**#${rank}** | <@${message.author.id}> \| **XP: ${authorTextXP.xp}**`;
-    // إضافة باقي المستخدمين
+    textLines = `**#${rank}** | <@${message.author.id}> \\| **XP: ${authorTextXP.xp}**`;
+
     const others = textTop.filter(e => e.userId !== message.author.id).slice(0, 4);
     if (others.length > 0) {
       textLines += '\n' + others
-        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \\| **XP: ${entry.xp}**`)
         .join('\n');
     }
   } else {
-    textLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
-    // إضافة بقية المستخدمين إن وجدوا
+    textLines = `**#1** | <@${message.author.id}> \\| **XP: 0**`;
+
     const others = textTop.filter(e => e.userId !== message.author.id && e.xp > 0).slice(0, 4);
     if (others.length > 0) {
       textLines += '\n' + others
-        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \\| **XP: ${entry.xp}**`)
         .join('\n');
     }
   }
@@ -71,19 +72,21 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
   const authorVoiceXP = voiceTop.find(e => e.userId === message.author.id);
   if (authorVoiceXP && authorVoiceXP.xp > 0) {
     const rank = voiceTop.findIndex(e => e.userId === message.author.id) + 1;
-    voiceLines = `**#${rank}** | <@${message.author.id}> \| **XP: ${authorVoiceXP.xp}**`;
+    voiceLines = `**#${rank}** | <@${message.author.id}> \\| **XP: ${authorVoiceXP.xp}**`;
+
     const others = voiceTop.filter(e => e.userId !== message.author.id).slice(0, 4);
     if (others.length > 0) {
       voiceLines += '\n' + others
-        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \\| **XP: ${entry.xp}**`)
         .join('\n');
     }
   } else {
-    voiceLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
+    voiceLines = `**#1** | <@${message.author.id}> \\| **XP: 0**`;
+
     const others = voiceTop.filter(e => e.userId !== message.author.id && e.xp > 0).slice(0, 4);
     if (others.length > 0) {
       voiceLines += '\n' + others
-        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+        .map((entry, i) => `**#${i + 2}** | <@${entry.userId}> \\| **XP: ${entry.xp}**`)
         .join('\n');
     }
   }
@@ -98,8 +101,8 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
       iconURL: message.guild.iconURL({ size: 128 }) || undefined
     })
     .addFields(
-      { name: '💬 أعلى كتابياً', value: textLines, inline: true },
-      { name: '🔊 أعلى صوتياً', value: voiceLines, inline: true }
+      { name: '💬 أعلى كتابياً', value: textLines || '**لا يوجد بيانات**', inline: true },
+      { name: '🔊 أعلى صوتياً', value: voiceLines || '**لا يوجد بيانات**', inline: true }
     )
     .setFooter({
       text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
@@ -111,10 +114,19 @@ async function handleCombinedLeaderboard(message, type = 'total', period = 'all'
 
 // ------------------- دوال مساعدة -------------------
 function getTypeXpField(type, period) {
-  if (period !== 'all') {
-    return `${period === 'day' ? 'daily' : period === 'week' ? 'weekly' : 'monthly'}TextXP`;
+  // type: 'text' | 'voice'
+  if (period === 'all') {
+    return type === 'voice' ? 'voiceXP' : 'textXP';
   }
-  return type === 'voice' ? 'voiceXP' : 'textXP';
+
+  const prefix =
+    period === 'day' ? 'daily' :
+    period === 'week' ? 'weekly' :
+    period === 'month' ? 'monthly' : null;
+
+  if (!prefix) return type === 'voice' ? 'voiceXP' : 'textXP';
+
+  return type === 'voice' ? `${prefix}VoiceXP` : `${prefix}TextXP`;
 }
 
 function getPeriodSectionTitle(period) {
@@ -164,13 +176,13 @@ module.exports = {
         } else if (['v', 'voice'].includes(secondToken)) {
           type = 'voice';
           period = 'all';
-        } else if ((secondToken.startsWith('v') && ['vday', 'vd'].includes(secondToken))) {
+        } else if (secondToken.startsWith('v') && ['vday', 'vd'].includes(secondToken)) {
           type = 'voice';
           period = 'day';
-        } else if ((secondToken.startsWith('v') && ['vweek', 'vw'].includes(secondToken))) {
+        } else if (secondToken.startsWith('v') && ['vweek', 'vw'].includes(secondToken)) {
           type = 'voice';
           period = 'week';
-        } else if ((secondToken.startsWith('v') && ['vmonth', 'vm'].includes(secondToken))) {
+        } else if (secondToken.startsWith('v') && ['vmonth', 'vm'].includes(secondToken)) {
           type = 'voice';
           period = 'month';
         }
