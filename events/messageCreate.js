@@ -8,6 +8,90 @@ const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
+// ==================== لوحة المتصدرين الموحدة ====================
+async function handleCombinedLeaderboard(message) {
+  const docs = await UserXP.find({ guildId: message.guild.id });
+  
+  // جلب بيانات المستخدم الحالي
+  let userData = await UserXP.findOne({
+    guildId: message.guild.id,
+    userId: message.author.id
+  });
+
+  // تطبيق resets إذا كان عندك في resetHelpers
+  await Promise.all(docs.map(doc => resetIfNeeded(doc)));
+  
+  // استخراج التوب الكتابي
+  const textTop = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc.textXP ?? 0
+    }))
+    .filter(x => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
+
+  // استخراج التوب الصوتي
+  const voiceTop = docs
+    .map(doc => ({
+      userId: doc.userId,
+      xp: doc.voiceXP ?? 0
+    }))
+    .filter(x => x.xp > 0)
+    .sort((a, b) => b.xp - a.xp)
+    .slice(0, 5);
+
+  // --- تنسيق كتابي ---
+  let textLines = '';
+  if (textTop.length > 0) {
+    textLines = textTop
+      .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+      .join('\n');
+  } else if (userData?.textXP && userData.textXP > 0) {
+    textLines = `**#1** | <@${message.author.id}> \| **XP: ${userData.textXP}**`;
+  } else {
+    textLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
+  }
+
+  // --- تنسيق صوتي ---
+  let voiceLines = '';
+  if (voiceTop.length > 0) {
+    voiceLines = voiceTop
+      .map((entry, i) => `**#${i + 1}** | <@${entry.userId}> \| **XP: ${entry.xp}**`)
+      .join('\n');
+  } else if (userData?.voiceXP && userData.voiceXP > 0) {
+    voiceLines = `**#1** | <@${message.author.id}> \| **XP: ${userData.voiceXP}**`;
+  } else {
+    voiceLines = `**#1** | <@${message.author.id}> \| **XP: 0**`;
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(0xE01B1B)
+    .setAuthor({
+      name: 'قائمة متصدرين السيرفر',
+      iconURL: message.guild.iconURL({ size: 128 }) || undefined
+    })
+    .addFields(
+      { name: '💬 أعلى كتابياً', value: textLines, inline: true },
+      { name: '🔊 أعلى صوتياً', value: voiceLines, inline: true }
+    )
+    .setFooter({
+      text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+      iconURL: message.author.displayAvatarURL({ size: 128 })
+    });
+
+  await message.reply({ embeds: [embed] });
+}
+
+// ==================== بنل أحمر عام ====================
+function redPanel(text, title = null) {
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setDescription(`**${text}**`);
+  if (title) embed.setTitle(title);
+  return embed;
+}
+
 module.exports = {
   name: 'messageCreate',
   async execute(message) {
@@ -17,17 +101,16 @@ module.exports = {
     const lower = content.toLowerCase();
     const tokens = lower.split(/\s+/);
 
-    // ========= أمر التوب — بنل واحد فيه كتابي + صوتي =========
-    if (tokens[0] === 't') {
-      const period = tokens[1]; // week, day, month أو فاضي
-      await handleCombinedLeaderboard(message, period);
-      return;
+    // ==================== أمر التوب بدون برفكس ====================
+    if (tokens[0] === 't' || tokens[0] === 'top') {
+      await handleCombinedLeaderboard(message);
+      return; // لا نضيف XP لهذه الرسالة
     }
 
-    // ========= نظام XP الكتابي + مستويات =========
+    // ==================== نظام XP الكتابي + مستويات ====================
     await addTextXP(message);
 
-    // ========= نظام التكت والدعم =========
+    // ==================== نظام التكت والدعم ====================
     if (
       message.channel?.name?.startsWith(TICKET_PREFIX) &&
       message.member?.roles.cache.has(SUPPORT_ROLE_ID)
@@ -68,126 +151,7 @@ module.exports = {
   }
 };
 
-// ===== لوحة متصدرين واحدة فيها كتابي + صوتي =====
-async function handleCombinedLeaderboard(message, period) {
-  const docs = await UserXP.find({ guildId: message.guild.id });
-
-  if (!docs.length) {
-    const emptyEmbed = new EmbedBuilder()
-      .setColor(0xE01B1B)
-      .setAuthor({
-        name: 'لائحة متصدرين نقاط السيرفر',
-        iconURL: message.guild.iconURL({ size: 128 }) || undefined
-      })
-      .addFields(
-        { name: '💬 أعلى ٥ كتابياً', value: 'لا يوجد بيانات بعد.', inline: true },
-        { name: '🔊 أعلى ٥ صوتياً', value: 'لا يوجد بيانات بعد.', inline: true }
-      )
-      .setFooter({
-        text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
-        iconURL: message.author.displayAvatarURL({ size: 128 })
-      });
-
-    await message.reply({ embeds: [emptyEmbed] });
-    return;
-  }
-
-  await Promise.all(docs.map(doc => resetIfNeeded(doc)));
-
-  // تحديد حقل الـ XP حسب الفترة
-  let textField = 'textXP';
-  let voiceField = 'voiceXP';
-  let periodLabel = '';
-
-  if (period === 'day') {
-    textField = 'dailyTextXP';
-    voiceField = 'dailyVoiceXP';
-    periodLabel = ' (اليوم)';
-  } else if (period === 'week') {
-    textField = 'weeklyTextXP';
-    voiceField = 'weeklyVoiceXP';
-    periodLabel = ' (الأسبوع)';
-  } else if (period === 'month') {
-    textField = 'monthlyTextXP';
-    voiceField = 'monthlyVoiceXP';
-    periodLabel = ' (الشهر)';
-  }
-
-  // توب 5 كتابي
-  const textTop = docs
-    .map(doc => ({ userId: doc.userId, xp: doc[textField] ?? 0 }))
-    .filter(x => x.xp > 0)
-    .sort((a, b) => b.xp - a.xp)
-    .slice(0, 5);
-
-  // توب 5 صوتي
-  const voiceTop = docs
-    .map(doc => ({ userId: doc.userId, xp: doc[voiceField] ?? 0 }))
-    .filter(x => x.xp > 0)
-    .sort((a, b) => b.xp - a.xp)
-    .slice(0, 5);
-
-  const textLines = textTop.length
-    ? textTop
-        .map((e, i) => `**#${i + 1}** | <@${e.userId}> | **XP: ${e.xp}**`)
-        .join('\n')
-    : 'لا يوجد بيانات بعد.';
-
-  const voiceLines = voiceTop.length
-    ? voiceTop
-        .map((e, i) => `**#${i + 1}** | <@${e.userId}> | **XP: ${e.xp}**`)
-        .join('\n')
-    : 'لا يوجد بيانات بعد.';
-
-  // حقل فاصل وسط بين العمودين
-  const topTextTag = textTop.length
-    ? `<top text <@&week/ ✨المزيد`
-    : '';
-  const topVoiceTag = voiceTop.length
-    ? `<top voice <@&week/ ✨المزيد`
-    : '';
-
-  const embed = new EmbedBuilder()
-    .setColor(0xE01B1B)
-    .setAuthor({
-      name: `لائحة متصدرين نقاط السيرفر${periodLabel}`,
-      iconURL: message.guild.iconURL({ size: 128 }) || undefined
-    })
-    .addFields(
-      {
-        name: '🔊 أعلى ٥ صوتياً',
-        value: voiceLines,
-        inline: true
-      },
-      {
-        name: '\u200B',
-        value: '\u200B',
-        inline: true
-      },
-      {
-        name: '💬 أعلى ٥ كتابياً',
-        value: textLines,
-        inline: true
-      }
-    )
-    .setFooter({
-      text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
-      iconURL: message.author.displayAvatarURL({ size: 128 })
-    });
-
-  await message.reply({ embeds: [embed] });
-}
-
-// ===== بنل أحمر عام =====
-function redPanel(text, title = null) {
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setDescription(`**${text}**`);
-  if (title) embed.setTitle(title);
-  return embed;
-}
-
-// ===== نظام XP الكتابي =====
+// ==================== نظام XP الكتابي ====================
 async function addTextXP(message) {
   let data = await UserXP.findOne({
     guildId: message.guild.id,
