@@ -1,30 +1,27 @@
-// models/UserXP.js
 const mongoose = require('mongoose');
 
 const UserXPSchema = new mongoose.Schema({
-  guildId: { type: String, required: true },
-  userId: { type: String, required: true },
-  
-  // الخبرة النصية
+  guildId: { type: String, required: true, index: true },
+  userId: { type: String, required: true, index: true },
+
   textXp: { type: Number, default: 0 },
-  textDailyXp: { type: Number, default: 0 },
-  textWeeklyXp: { type: Number, default: 0 },
-  textMonthlyXp: { type: Number, default: 0 },
-  
-  // الخبرة الصوتية
   voiceXp: { type: Number, default: 0 },
-  voiceDailyXp: { type: Number, default: 0 },
-  voiceWeeklyXp: { type: Number, default: 0 },
-  voiceMonthlyXp: { type: Number, default: 0 },
-  
-  // مستويات الخبرة
+  totalXp: { type: Number, default: 0 },
+
   level: { type: Number, default: 0 },
-  
-  // أوقات إعادة التعيين
+
+  dailyTextXp: { type: Number, default: 0 },
+  weeklyTextXp: { type: Number, default: 0 },
+  monthlyTextXp: { type: Number, default: 0 },
+
+  dailyVoiceXp: { type: Number, default: 0 },
+  weeklyVoiceXp: { type: Number, default: 0 },
+  monthlyVoiceXp: { type: Number, default: 0 },
+
   dailyResetAt: { type: Number, default: 0 },
   weeklyResetAt: { type: Number, default: 0 },
   monthlyResetAt: { type: Number, default: 0 }
-});
+}, { timestamps: true });
 
 UserXPSchema.index({ guildId: 1, userId: 1 }, { unique: true });
 
