@@ -15,7 +15,7 @@ const WARN_LOG_CHANNEL_ID = '1463931942058852399';
 const DM_USER_ON_WARN = true;
 const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
 const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'ت'];
-const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات'];
+const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات', 'تحديرات'];
 
 const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
 const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
@@ -25,12 +25,16 @@ const TEXT_XP_MIN = 15;
 const TEXT_XP_MAX = 25;
 const TEXT_XP_COOLDOWN = 60_000;
 
-const TOP_ALIASES = ['t'];
+const TOP_ALIASES = ['t', 'top'];
 const TOP_LIMIT = 10;
+
+// حط هنا رابط صورة/خط السيرفر اللي تبيه يطلع داخل بنل التوب فقط
+const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
 const recentCommands = new Map();
 const processedCommands = new Map();
 const textXpCooldowns = new Map();
+const recentWarnActions = new Map();
 
 const sendNoPing = (channel, payload) => channel.send({ allowedMentions: { parse: [] }, ...payload });
 
@@ -67,19 +71,19 @@ const bluePanel = (text, title = null) => {
   if (title) embed.setTitle(title);
   return embed;
 };
-const redConfirmPanel = text => new EmbedBuilder().setColor(0xff0000).setDescription(`✅ ${text}`);
+const redConfirmPanel = text => new EmbedBuilder().setColor(0xff0000).setDescription(`**✅ ${text}**`);
 
 const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
   const modUser = moderator.user ?? moderator;
   return new EmbedBuilder()
     .setColor(0xff0000)
-    .setTitle('⚠️ تحذير جديد')
+    .setTitle('⚠️ **تحذير جديد**')
     .addFields(
-      { name: 'المُحذَّر', value: `<@${target.id}> (${target.id})` },
-      { name: 'المُصدر', value: `<@${modUser.id}> (${modUser.id})` },
-      { name: 'السبب', value: reason },
-      { name: 'الوقت', value: new Date().toLocaleString('ar-SA') },
-      { name: 'رقم الحالة', value: caseId }
+      { name: 'المُحذَّر', value: `**<@${target.id}> (${target.id})**` },
+      { name: 'المُصدر', value: `**<@${modUser.id}> (${modUser.id})**` },
+      { name: 'السبب', value: `**${reason}**` },
+      { name: 'الوقت', value: `**${new Date().toLocaleString('ar-SA')}**` },
+      { name: 'رقم الحالة', value: `**${caseId}**` }
     )
     .setFooter({
       text: `بطلب من ${modUser.tag}`,
@@ -94,6 +98,7 @@ const extractIdFromMention = arg => {
   if (/^\d{15,21}$/.test(arg)) return arg;
   return null;
 };
+
 const fetchMember = async (guild, arg) => {
   const id = extractIdFromMention(arg);
   if (!id) return null;
@@ -103,6 +108,17 @@ const fetchMember = async (guild, arg) => {
     return null;
   }
 };
+
+// حماية إضافية تمنع تكرار التحذير مرتين بنفس السبب خلال ثواني قليلة
+function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
+  const key = `${guildId}:${modId}:${targetId}:${reason.trim().toLowerCase()}`;
+  const now = Date.now();
+  const last = recentWarnActions.get(key) || 0;
+  if (now - last < ms) return true;
+  recentWarnActions.set(key, now);
+  setTimeout(() => recentWarnActions.delete(key), ms + 500);
+  return false;
+}
 
 async function addWarningAndNotify(message, member, reason) {
   let doc = await Warning.findOne({ guildId: message.guild.id, userId: member.id });
@@ -144,7 +160,7 @@ async function showWarnings(message, member) {
   const lines = last10
     .map(inf => {
       const when = new Date(inf.createdAt).toLocaleString('ar-SA');
-      return `• رقم الحالة: ${inf.caseId}\nالزمان: ${when}\nبواسطة: <@${inf.moderatorId}>\nالسبب: ${inf.reason}`;
+      return `**• رقم الحالة: ${inf.caseId}\nالزمان: ${when}\nبواسطة: <@${inf.moderatorId}>\nالسبب: ${inf.reason}**`;
     })
     .join('\n\n');
 
@@ -227,12 +243,58 @@ async function grantTextXp(message) {
   await userXp.save();
 }
 
-const formatColumn = (rows, key) =>
-  rows.map(row => `#${row.rank} • \`${row[key]}\``).join('\n') || 'لا توجد بيانات.';
-const formatNames = rows =>
-  rows
-    .map(row => `**#${row.rank}** ${row.name}\n⭐ الإجمالي: \`${row.totalXp}\` • 🏅 المستوى: \`${row.level}\``)
-    .join('\n\n');
+function getTopScopeFromArg(arg) {
+  const v = (arg || '').toLowerCase();
+  if (['day', 'daily', 'يومي', 'اليومي'].includes(v)) return 'day';
+  if (['week', 'weekly', 'اسبوع', 'أسبوع', 'اسبوعي', 'أسبوعي'].includes(v)) return 'week';
+  if (['month', 'monthly', 'شهري', 'الشهري'].includes(v)) return 'month';
+  return null;
+}
+
+function getScopedValues(doc, scope, now) {
+  const dayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+
+  const dayValid = doc.dailyResetAt && doc.dailyResetAt >= dayStart;
+  const weekValid = doc.weeklyResetAt && doc.weeklyResetAt >= weekStart;
+  const monthValid = doc.monthlyResetAt && doc.monthlyResetAt >= monthStart;
+
+  if (scope === 'day') {
+    const textXp = dayValid ? (doc.dailyTextXp || 0) : 0;
+    const voiceXp = dayValid ? (doc.dailyVoiceXp || 0) : 0;
+    return { textXp, voiceXp, totalXp: textXp + voiceXp };
+  }
+
+  if (scope === 'week') {
+    const textXp = weekValid ? (doc.weeklyTextXp || 0) : 0;
+    const voiceXp = weekValid ? (doc.weeklyVoiceXp || 0) : 0;
+    return { textXp, voiceXp, totalXp: textXp + voiceXp };
+  }
+
+  if (scope === 'month') {
+    const textXp = monthValid ? (doc.monthlyTextXp || 0) : 0;
+    const voiceXp = monthValid ? (doc.monthlyVoiceXp || 0) : 0;
+    return { textXp, voiceXp, totalXp: textXp + voiceXp };
+  }
+
+  return {
+    textXp: doc.textXp || 0,
+    voiceXp: doc.voiceXp || 0,
+    totalXp: doc.totalXp || ((doc.textXp || 0) + (doc.voiceXp || 0))
+  };
+}
+
+function scopeLabel(scope) {
+  if (scope === 'day') return 'اليومي';
+  if (scope === 'week') return 'الأسبوعي';
+  if (scope === 'month') return 'الشهري';
+  return 'العام';
+}
+
+function formatTopField(rows, key) {
+  return rows.map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r[key]}**`).join('\n') || '**لا توجد بيانات.**';
+}
 
 module.exports = {
   name: Events.MessageCreate,
@@ -240,7 +302,7 @@ module.exports = {
     if (!message.guild || message.author.bot) return;
 
     if (typeof resetIfNeeded === 'function') {
-      try { await resetIfNeeded(message.guild.id); } catch { /* silent */ }
+      try { await resetIfNeeded(message.guild.id); } catch {}
     }
 
     if (message.content.trim().length > 0 || message.attachments.size > 0) {
@@ -309,6 +371,11 @@ module.exports = {
         return;
       }
 
+      if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) {
+        clearProcessed(guardKey);
+        return;
+      }
+
       await addWarningAndNotify(message, targetMember, reason);
       return;
     }
@@ -329,6 +396,7 @@ module.exports = {
       return;
     }
 
+    // نظام التكتات كما هو (بدون حذف)
     if (CLAIM_ALIASES.includes(command)) {
       const guardKey = `${message.id}:claim`;
       if (!markProcessed(guardKey, COOLDOWN)) return;
@@ -429,37 +497,33 @@ module.exports = {
       await userXp.save();
 
       const embed = new EmbedBuilder()
-        .setColor(0x00c853)
-        .setAuthor({ name: `خبرة ${member.user.tag}`, iconURL: member.displayAvatarURL({ dynamic: true }) })
+        .setColor(0xff0000)
+        .setAuthor({ name: `قائمة XP - ${message.guild.name}`, iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL() })
+        .setDescription(`**رتبتك ومعلوماتك:**\n**<@${member.id}> | XP: ${userXp.totalXp} | Level: ${userXp.level}**`)
         .addFields(
           {
-            name: '📝 خبرة كتابية',
+            name: '📝 **خبرة كتابية**',
             value: [
-              `إجمالي: \`${userXp.textXp}\``,
-              `يومي: \`${userXp.dailyTextXp}\``,
-              `أسبوعي: \`${userXp.weeklyTextXp}\``,
-              `شهري: \`${userXp.monthlyTextXp}\``
+              `**إجمالي: ${userXp.textXp} XP**`,
+              `**يومي: ${userXp.dailyTextXp} XP**`,
+              `**أسبوعي: ${userXp.weeklyTextXp} XP**`,
+              `**شهري: ${userXp.monthlyTextXp} XP**`
             ].join('\n'),
             inline: true
           },
           {
-            name: '🎙️ خبرة فويس',
+            name: '🎙️ **خبرة فويس**',
             value: [
-              `إجمالي: \`${userXp.voiceXp}\``,
-              `يومي: \`${userXp.dailyVoiceXp}\``,
-              `أسبوعي: \`${userXp.weeklyVoiceXp}\``,
-              `شهري: \`${userXp.monthlyVoiceXp}\``
+              `**إجمالي: ${userXp.voiceXp} XP**`,
+              `**يومي: ${userXp.dailyVoiceXp} XP**`,
+              `**أسبوعي: ${userXp.weeklyVoiceXp} XP**`,
+              `**شهري: ${userXp.monthlyVoiceXp} XP**`
             ].join('\n'),
             inline: true
-          },
-          {
-            name: '⭐ الإجمالي',
-            value: `XP كلي: \`${userXp.totalXp}\`\nالمستوى الحالي: \`${userXp.level}\``,
-            inline: false
           }
         )
         .setFooter({
-          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA')}`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -471,48 +535,82 @@ module.exports = {
       const guardKey = `${message.id}:t`;
       if (!markProcessed(guardKey, 2000)) return;
 
-      const topUsers = await UserXP.find({ guildId: message.guild.id })
-        .sort({ totalXp: -1 })
-        .limit(TOP_LIMIT);
+      const scopeArg = tokens.shift();
+      const scope = getTopScopeFromArg(scopeArg);
 
-      if (!topUsers.length) {
+      if (!scope) {
         clearProcessed(guardKey);
-        await sendNoPing(message.channel, { embeds: [redPanel('لا توجد بيانات خبرة مسجلة بعد.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(
+            `استخدام الأمر:\n` +
+            `\`${PREFIX}t day\` أو \`${PREFIX}t week\` أو \`${PREFIX}t شهري\``
+          )]
+        });
         return;
       }
 
-      const rows = await Promise.all(
-        topUsers.map(async (doc, index) => {
-          const member = await message.guild.members.fetch(doc.userId).catch(() => null);
-          return {
-            rank: index + 1,
-            name: member?.user?.username ?? `مستخدم غير معروف (${doc.userId})`,
-            textXp: doc.textXp || 0,
-            voiceXp: doc.voiceXp || 0,
-            totalXp: doc.totalXp || 0,
-            level: doc.level || 0
-          };
-        })
-      );
+      const now = Date.now();
+      const docs = await UserXP.find({ guildId: message.guild.id });
+
+      const scopedRows = docs.map(doc => {
+        const scoped = getScopedValues(doc, scope, now);
+        const totalForLevel = (doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0));
+        return {
+          userId: doc.userId,
+          textXp: scoped.textXp,
+          voiceXp: scoped.voiceXp,
+          totalXp: scoped.totalXp,
+          level: doc.level ?? calculateLevel(totalForLevel)
+        };
+      }).filter(r => r.totalXp > 0);
+
+      if (!scopedRows.length) {
+        clearProcessed(guardKey);
+        await sendNoPing(message.channel, { embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)] });
+        return;
+      }
+
+      scopedRows.sort((a, b) => b.totalXp - a.totalXp);
+
+      const withRank = scopedRows.map((r, i) => ({ ...r, rank: i + 1 }));
+      const topRows = withRank.slice(0, TOP_LIMIT);
+
+      const myRow = withRank.find(r => r.userId === message.author.id);
+      const myRankText = myRow
+        ? `**رتبتك: #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Level: ${myRow.level}**`
+        : `**رتبتك: خارج قائمة المتصدرين حالياً**`;
 
       const embed = new EmbedBuilder()
-        .setColor(0x0099ff)
+        .setColor(0xff0000)
         .setAuthor({
-          name: 'قائمة متصدرين السيرفر',
+          name: `قائمة متصدرين السيرفر - ${scopeLabel(scope)}`,
           iconURL: message.guild.iconURL({ dynamic: true, size: 256 }) || message.client.user.displayAvatarURL()
         })
         .setThumbnail(message.guild.iconURL({ dynamic: true, size: 512 }) || message.client.user.displayAvatarURL())
-        .setDescription(formatNames(rows))
+        .setDescription(
+          [
+            `**Top ${scopeLabel(scope)}**`,
+            '',
+            ...topRows.map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`),
+            '',
+            myRankText
+          ].join('\n')
+        )
         .addFields(
-          { name: '📝 كتابي', value: formatColumn(rows, 'textXp'), inline: true },
-          { name: '🎙️ فويس', value: formatColumn(rows, 'voiceXp'), inline: true }
+          { name: '📝 **Top Text XP**', value: formatTopField(topRows, 'textXp'), inline: true },
+          { name: '🎙️ **Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
         )
         .setFooter({
           text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
+      if (TOP_PANEL_IMAGE_URL && /^https?:\/\//i.test(TOP_PANEL_IMAGE_URL)) {
+        embed.setImage(TOP_PANEL_IMAGE_URL);
+      }
+
       await sendNoPing(message.channel, { embeds: [embed] });
+      return;
     }
   }
 };
