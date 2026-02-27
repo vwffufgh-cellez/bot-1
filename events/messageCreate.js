@@ -707,7 +707,7 @@ module.exports = {
         return;
       }
 
-      const topReplyTag = `top:${message.id}:${scope}`;
+      const topReplyTag = `top:${scope}:${message.author.id}`;
       if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
         return;
       }
@@ -747,9 +747,16 @@ module.exports = {
       }
 
       const myRow = rankedRows.find(row => row.userId === message.author.id);
-      const myRankText = myRow
-        ? `**#${myRow.rank}** | <@${myRow.userId}> | **XP: ${myRow.totalXp}** | **Lv: ${myRow.level}**`
+      const inTopList = topRows.some(r => r.userId === message.author.id);
+      const myRankValue = myRow
+        ? inTopList
+          ? `**أنت ضمن المتصدرين:** #${myRow.rank} • XP: ${myRow.totalXp} • Lv: ${myRow.level}`
+          : `**#${myRow.rank}** | <@${myRow.userId}> | **XP: ${myRow.totalXp}** | **Lv: ${myRow.level}**`
         : '**لا توجد بيانات عن ترتيبك بعد.**';
+
+      const mainList = topRows
+        .map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`)
+        .join('\n');
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -760,20 +767,11 @@ module.exports = {
         .setThumbnail(
           message.guild.iconURL({ dynamic: true, size: 512 }) || message.client.user.displayAvatarURL()
         )
-        .setDescription(
-          [
-            `**Top ${scopeLabel(scope)}**`,
-            '',
-            ...topRows.map(
-              r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`
-            ),
-            '',
-            myRankText
-          ].filter(Boolean).join('\n')
-        )
         .addFields(
-          { name: '📝 **Top Text XP**', value: formatTopField(topRows, 'textXp'), inline: true },
-          { name: '🎙️ **Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
+          { name: '🏆 المتصدرون', value: mainList || '**لا توجد بيانات.**', inline: false },
+          { name: '📌 ترتيبك الحالي', value: myRankValue, inline: false },
+          { name: '📝 Top Text XP', value: formatTopField(topRows, 'textXp'), inline: true },
+          { name: '🎙️ Top Voice XP', value: formatTopField(topRows, 'voiceXp'), inline: true }
         )
         .setFooter({
           text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
