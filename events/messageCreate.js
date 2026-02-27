@@ -27,7 +27,6 @@ const TOP_ALIASES = ['t', 'top', 'توب'];
 const TOP_LIMIT = 10;
 const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
-// 🔐 ثابت جديد لزمن حجز القفل لأوامر الـTop (10 ثواني)
 const TOP_REPLY_TTL = 10_000;
 
 const recentCommands = new Map();
@@ -589,37 +588,12 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `قائمة XP - ${message.guild.name}`,
+          name: `معلومات XP`,
           iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
         })
-        .setDescription(`**رتبتك ومعلوماتك:**\n**<@${member.id}> | XP: ${userXp.totalXp} | Level: ${userXp.level}**`)
-        .addFields(
-          {
-            name: '📝 **خبرة كتابية**',
-            value: [
-              `**إجمالي: ${userXp.textXp} XP**`,
-              `**يومي: ${userXp.dailyTextXp} XP**`,
-              `**أسبوعي: ${userXp.weeklyTextXp} XP**`,
-              `**شهري: ${userXp.monthlyTextXp} XP**`
-            ].join('\n'),
-            inline: true
-          },
-          {
-            name: '🎙️ **خبرة فويس**',
-            value: [
-              `**إجمالي: ${userXp.voiceXp} XP**`,
-              `**يومي: ${userXp.dailyVoiceXp} XP**`,
-              `**أسبوعي: ${userXp.weeklyVoiceXp} XP**`,
-              `**شهري: ${userXp.monthlyVoiceXp} XP**`
-            ].join('\n'),
-            inline: true
-          }
-        )
+        .setDescription(`**<@${member.id}> | XP: ${userXp.totalXp} | Level: ${userXp.level}**`)
         .setFooter({
-          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}`,
+          text: `${message.author.username}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -628,9 +602,8 @@ module.exports = {
     }
 
     if (isTopCommand) {
-      // 🔐 حجز مبدئي سريع لمنع التكرار المزدوج لنفس الرسالة
       const guardKey = `${message.id}:t`;
-      if (!markProcessed(guardKey, 2000)) return;
+      if (!markProcessed(guardKey, 1000)) return;
 
       const scopeArg = tokens.shift();
       const scope = getTopScopeFromArg(scopeArg);
@@ -647,8 +620,7 @@ module.exports = {
         return;
       }
 
-      // 🔐 نحجز القفل لهذا الحدث تحديدًا (رسالة + نطاق) قبل الاستعلامات الثقيلة
-      const topReplyTag = `top:${message.id}:${scope}`;
+      const topReplyTag = `top:${message.author.id}:${scope}`;
       if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
         clearProcessed(guardKey);
         return;
@@ -665,8 +637,6 @@ module.exports = {
           const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
           return {
             userId: doc.userId,
-            textXp: scoped.textXp,
-            voiceXp: scoped.voiceXp,
             totalXp: scoped.totalXp,
             level: doc.level ?? calculateLevel(totalForLevel)
           };
@@ -690,9 +660,9 @@ module.exports = {
       const topRows = withRank.slice(0, TOP_LIMIT);
 
       const myRow = withRank.find(r => r.userId === message.author.id);
-      const myRankText = myRow
-        ? `**رتبتك: #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Level: ${myRow.level}**`
-        : `**رتبتك: خارج قائمة المتصدرين حالياً**`;
+      const myRankSection = myRow
+        ? `\n\n**رتبتك: #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Level: ${myRow.level}**`
+        : `\n\n**رتبتك: خارج قائمة المتصدرين**`;
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -705,24 +675,14 @@ module.exports = {
         )
         .setDescription(
           [
-            `**Top ${scopeLabel(scope)}**`,
-            '',
             ...topRows.map(
               r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`
             ),
-            '',
-            myRankText
+            myRankSection
           ].join('\n')
         )
-        .addFields(
-          { name: '📝 **Top Text XP**', value: formatTopField(topRows, 'textXp'), inline: true },
-          { name: '🎙️ **Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
-        )
         .setFooter({
-          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}`,
+          text: `${message.author.username}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -730,7 +690,6 @@ module.exports = {
         embed.setImage(TOP_PANEL_IMAGE_URL);
       }
 
-      // ✅ نستخدم sendNoPing لأننا حجزنا القفل يدويًا مسبقًا
       await sendNoPing(message.channel, { embeds: [embed] });
       return;
     }
