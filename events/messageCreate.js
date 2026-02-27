@@ -31,8 +31,8 @@ const recentCommands = new Map();
 const processedCommands = new Map();
 const textXpCooldowns = new Map();
 const recentWarnActions = new Map();
-const ticketReplyLocks = new Map();
-const TICKET_REPLY_COOLDOWN = 2000;
+const replyLocks = new Map();
+const MANAGED_REPLY_COOLDOWN = 2000;
 
 const sendNoPing = (channel, payload) =>
   channel.send({ allowedMentions: { parse: [] }, ...payload });
@@ -61,20 +61,20 @@ function clearProcessed(key) {
   processedCommands.delete(key);
 }
 
-function shouldSendTicketReply(channelId, tag, ttl = TICKET_REPLY_COOLDOWN) {
+function shouldSendManagedReply(channelId, tag, ttl = MANAGED_REPLY_COOLDOWN) {
   const key = `${channelId}:${tag}`;
   const now = Date.now();
-  const last = ticketReplyLocks.get(key) || 0;
+  const last = replyLocks.get(key) || 0;
   if (now - last < ttl) return false;
-  ticketReplyLocks.set(key, now);
+  replyLocks.set(key, now);
   setTimeout(() => {
-    if (ticketReplyLocks.get(key) === now) ticketReplyLocks.delete(key);
+    if (replyLocks.get(key) === now) replyLocks.delete(key);
   }, ttl * 2);
   return true;
 }
 
-async function sendTicketEmbedOnce(channel, tag, payload) {
-  if (!shouldSendTicketReply(channel.id, tag)) return;
+async function sendManagedEmbedOnce(channel, tag, payload, ttl) {
+  if (!shouldSendManagedReply(channel.id, tag, ttl ?? MANAGED_REPLY_COOLDOWN)) return;
   await sendNoPing(channel, payload);
 }
 
@@ -283,10 +283,14 @@ async function grantTextXp(message) {
 }
 
 function getTopScopeFromArg(arg) {
-  const v = (arg || '').toLowerCase();
+  const v = (arg || '').trim().toLowerCase();
+  if (!v) return 'all';
+
   if (['day', 'daily', 'يومي', 'اليومي'].includes(v)) return 'day';
   if (['week', 'weekly', 'اسبوع', 'أسبوع', 'اسبوعي', 'أسبوعي'].includes(v)) return 'week';
   if (['month', 'monthly', 'شهري', 'الشهري'].includes(v)) return 'month';
+  if (['all', 'global', 'server', 'عام', 'العام', 'سيرفر', 'كل'].includes(v)) return 'all';
+
   return null;
 }
 
@@ -466,14 +470,14 @@ module.exports = {
 
       if (!isTicketChannel) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'claim-outside', {
+        await sendManagedEmbedOnce(message.channel, 'claim-outside', {
           embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
         });
         return;
       }
       if (!hasSupportRole) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'claim-no-role', {
+        await sendManagedEmbedOnce(message.channel, 'claim-no-role', {
           embeds: [redPanel('لا تملك صلاحيات الاستلام.')]
         });
         return;
@@ -483,11 +487,11 @@ module.exports = {
       if (ticketClaim) {
         clearProcessed(guardKey);
         if (ticketClaim.claimedById === message.author.id) {
-          await sendTicketEmbedOnce(message.channel, 'claim-self', {
+          await sendManagedEmbedOnce(message.channel, 'claim-self', {
             embeds: [bluePanel('لقد استلمت هذه التذكرة بالفعل.')]
           });
         } else {
-          await sendTicketEmbedOnce(message.channel, 'claim-other', {
+          await sendManagedEmbedOnce(message.channel, 'claim-other', {
             embeds: [redPanel(`التذكرة مستلمة حالياً بواسطة <@${ticketClaim.claimedById}>.`)]
           });
         }
@@ -508,7 +512,7 @@ module.exports = {
         { upsert: true }
       );
 
-      await sendTicketEmbedOnce(message.channel, 'claim-success', {
+      await sendManagedEmbedOnce(message.channel, 'claim-success', {
         embeds: [bluePanel(`✅ <@${message.author.id}> قام باستلام التذكرة.`)]
       });
       return;
@@ -520,14 +524,14 @@ module.exports = {
 
       if (!isTicketChannel) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'unclaim-outside', {
+        await sendManagedEmbedOnce(message.channel, 'unclaim-outside', {
           embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
         });
         return;
       }
       if (!hasSupportRole) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'unclaim-no-role', {
+        await sendManagedEmbedOnce(message.channel, 'unclaim-no-role', {
           embeds: [redPanel('لا تملك صلاحيات الإلغاء.')]
         });
         return;
@@ -536,21 +540,21 @@ module.exports = {
       const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (!ticketClaim) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'unclaim-empty', {
+        await sendManagedEmbedOnce(message.channel, 'unclaim-empty', {
           embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')]
         });
         return;
       }
       if (ticketClaim.claimedById !== message.author.id) {
         clearProcessed(guardKey);
-        await sendTicketEmbedOnce(message.channel, 'unclaim-other', {
+        await sendManagedEmbedOnce(message.channel, 'unclaim-other', {
           embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)]
         });
         return;
       }
 
       await TicketClaim.deleteOne({ channelId: message.channel.id });
-      await sendTicketEmbedOnce(message.channel, 'unclaim-success', {
+      await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
         embeds: [bluePanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
       });
       return;
@@ -632,8 +636,7 @@ module.exports = {
         await sendNoPing(message.channel, {
           embeds: [
             redPanel(
-              `استخدام الأمر:\n\`top day\` أو \`top week\` أو \`top month\`\n` +
-                `(يمكنك استعمال الكلمات العربية مثل "top يومي" أيضاً)`
+              'استخدم: `top day`, `top week`, `top month`, أو `top all`\n(وتقدر تكتب يومي/أسبوعي/شهري/عام بالعربي).'
             )
           ]
         });
@@ -646,7 +649,7 @@ module.exports = {
       const dirtyWrites = [];
       const scopedRows = docs
         .map(doc => {
-          if (resetScopes(doc, now)) dirtyWrites.push(doc.save());
+          if (scope !== 'all' && resetScopes(doc, now)) dirtyWrites.push(doc.save());
           const scoped = getScopedValues(doc, scope, now);
           const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
           return {
@@ -659,7 +662,7 @@ module.exports = {
         })
         .filter(r => r.totalXp > 0);
 
-      if (dirtyWrites.length) {
+      if (scope !== 'all' && dirtyWrites.length) {
         Promise.allSettled(dirtyWrites).catch(() => {});
       }
 
@@ -716,7 +719,7 @@ module.exports = {
         embed.setImage(TOP_PANEL_IMAGE_URL);
       }
 
-      await sendNoPing(message.channel, { embeds: [embed] });
+      await sendManagedEmbedOnce(message.channel, `top-${scope}`, { embeds: [embed] }, 1500);
       return;
     }
   }
