@@ -28,16 +28,25 @@ const TOP_LIMIT = 10;
 const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
 const TOP_REPLY_TTL = 10_000;
+const MANAGED_REPLY_COOLDOWN = 2000;
+const MESSAGE_GUARD_TTL = 15_000;
 
 const recentCommands = new Map();
 const processedCommands = new Map();
 const textXpCooldowns = new Map();
 const recentWarnActions = new Map();
 const replyLocks = new Map();
-const MANAGED_REPLY_COOLDOWN = 2000;
+const messageGuards = new Map();
 
 const sendNoPing = (channel, payload) =>
   channel.send({ allowedMentions: { parse: [] }, ...payload });
+
+function lockMessage(messageId, ttl = MESSAGE_GUARD_TTL) {
+  if (messageGuards.has(messageId)) return false;
+  const timeout = setTimeout(() => messageGuards.delete(messageId), ttl);
+  messageGuards.set(messageId, timeout);
+  return true;
+}
 
 function isDuplicateCommand(message, ms = 2000) {
   const key = `${message.guild?.id}:${message.author.id}:${message.content.trim().toLowerCase()}`;
@@ -54,13 +63,6 @@ function markProcessed(key, ttl = 3000) {
   const timeout = setTimeout(() => processedCommands.delete(key), ttl);
   processedCommands.set(key, timeout);
   return true;
-}
-
-function clearProcessed(key) {
-  const timeout = processedCommands.get(key);
-  if (!timeout) return;
-  clearTimeout(timeout);
-  processedCommands.delete(key);
 }
 
 function shouldSendManagedReply(channelId, tag, ttl = MANAGED_REPLY_COOLDOWN) {
@@ -143,11 +145,22 @@ function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
 
 async function addWarningAndNotify(message, member, reason) {
   let doc = await Warning.findOne({ guildId: message.guild.id, userId: member.id });
-  if (!doc)
-    doc = new Warning({ guildId: message.guild.id, userId: member.id, infractions: [], total: 0 });
+  if (!doc) {
+    doc = new Warning({
+      guildId: message.guild.id,
+      userId: member.id,
+      infractions: [],
+      total: 0
+    });
+  }
 
   const caseId = `${Date.now().toString(36)}-${Math.floor(Math.random() * 1e4).toString(36)}`;
-  doc.infractions.push({ caseId, moderatorId: message.author.id, reason, createdAt: new Date() });
+  doc.infractions.push({
+    caseId,
+    moderatorId: message.author.id,
+    reason,
+    createdAt: new Date()
+  });
   doc.total = (doc.total ?? 0) + 1;
   await doc.save();
 
@@ -265,20 +278,40 @@ async function grantTextXp(message) {
     userXp = new UserXP({
       guildId: message.guild.id,
       userId: message.author.id,
+      textXp: 0,
+      voiceXp: 0,
+      totalXp: 0,
+      level: 0,
       dailyResetAt: startOfDay(now),
       weeklyResetAt: startOfWeek(now),
-      monthlyResetAt: startOfMonth(now)
+      monthlyResetAt: startOfMonth(now),
+      dailyTextXp: 0,
+      weeklyTextXp: 0,
+      monthlyTextXp: 0,
+      dailyVoiceXp: 0,
+      weeklyVoiceXp: 0,
+      monthlyVoiceXp: 0
     });
   }
 
   resetScopes(userXp, now);
 
-  userXp.textXp += xpAmount;
-  userXp.dailyTextXp += xpAmount;
-  userXp.weeklyTextXp += xpAmount;
-  userXp.monthlyTextXp += xpAmount;
+  const baseText = userXp.textXp || 0;
+  const baseDailyText = userXp.dailyTextXp || 0;
+  const baseWeeklyText = userXp.weeklyTextXp || 0;
+  const baseMonthlyText = userXp.monthlyTextXp || 0;
 
-  userXp.totalXp = userXp.textXp + userXp.voiceXp;
+  userXp.textXp = baseText + xpAmount;
+  userXp.dailyTextXp = baseDailyText + xpAmount;
+  userXp.weeklyTextXp = baseWeeklyText + xpAmount;
+  userXp.monthlyTextXp = baseMonthlyText + xpAmount;
+
+  userXp.voiceXp = userXp.voiceXp || 0;
+  userXp.dailyVoiceXp = userXp.dailyVoiceXp || 0;
+  userXp.weeklyVoiceXp = userXp.weeklyVoiceXp || 0;
+  userXp.monthlyVoiceXp = userXp.monthlyVoiceXp || 0;
+
+  userXp.totalXp = (userXp.textXp || 0) + (userXp.voiceXp || 0);
   userXp.level = calculateLevel(userXp.totalXp);
 
   await userXp.save();
@@ -345,6 +378,7 @@ module.exports = {
   name: Events.MessageCreate,
   async execute(message) {
     if (!message.guild || message.author.bot) return;
+    if (!lockMessage(message.id)) return;
 
     if (typeof resetIfNeeded === 'function') {
       try {
@@ -392,33 +426,28 @@ module.exports = {
       if (!markProcessed(guardKey)) return;
 
       if (!message.member.permissions.has(MOD_REQUIRED_PERM)) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لا تملك صلاحية تحذير الأعضاء.')] });
         return;
       }
 
       const targetArg = tokens.shift();
       if (!targetArg) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('الرجاء تحديد العضو: `warn @user السبب`')] });
         return;
       }
 
       const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
         return;
       }
 
       if (targetMember.user.bot) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لا يمكن تحذير بوت.')] });
         return;
       }
 
       if (targetMember.id === message.author.id) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لا يمكنك تحذير نفسك.')] });
         return;
       }
@@ -427,7 +456,6 @@ module.exports = {
         message.guild.ownerId !== message.author.id &&
         message.member.roles.highest.position <= targetMember.roles.highest.position
       ) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, {
           embeds: [redPanel('لا يمكنك تحذير هذا العضو لأن رتبته أعلى أو مساوية لرتبتك.')]
         });
@@ -436,13 +464,11 @@ module.exports = {
 
       const reason = tokens.join(' ').trim();
       if (!reason) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('الرجاء كتابة سبب التحذير.')] });
         return;
       }
 
       if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) {
-        clearProcessed(guardKey);
         return;
       }
 
@@ -457,7 +483,6 @@ module.exports = {
       const targetArg = tokens.shift();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
         return;
       }
@@ -471,14 +496,12 @@ module.exports = {
       if (!markProcessed(guardKey, COOLDOWN)) return;
 
       if (!isTicketChannel) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'claim-outside', {
           embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
         });
         return;
       }
       if (!hasSupportRole) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'claim-no-role', {
           embeds: [redPanel('لا تملك صلاحيات الاستلام.')]
         });
@@ -487,7 +510,6 @@ module.exports = {
 
       let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (ticketClaim) {
-        clearProcessed(guardKey);
         if (ticketClaim.claimedById === message.author.id) {
           await sendManagedEmbedOnce(message.channel, 'claim-self', {
             embeds: [bluePanel('لقد استلمت هذه التذكرة بالفعل.')]
@@ -525,14 +547,12 @@ module.exports = {
       if (!markProcessed(guardKey, COOLDOWN)) return;
 
       if (!isTicketChannel) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'unclaim-outside', {
           embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
         });
         return;
       }
       if (!hasSupportRole) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'unclaim-no-role', {
           embeds: [redPanel('لا تملك صلاحيات الإلغاء.')]
         });
@@ -541,14 +561,12 @@ module.exports = {
 
       const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (!ticketClaim) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'unclaim-empty', {
           embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')]
         });
         return;
       }
       if (ticketClaim.claimedById !== message.author.id) {
-        clearProcessed(guardKey);
         await sendManagedEmbedOnce(message.channel, 'unclaim-other', {
           embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)]
         });
@@ -569,7 +587,6 @@ module.exports = {
       const targetArg = tokens.shift();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
         return;
       }
@@ -577,23 +594,94 @@ module.exports = {
       const now = Date.now();
       let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
       if (!userXp) {
-        clearProcessed(guardKey);
-        await sendNoPing(message.channel, { embeds: [redPanel(`لا توجد بيانات لهذا العضو بعد.`)] });
-        return;
+        userXp = new UserXP({
+          guildId: message.guild.id,
+          userId: member.id,
+          textXp: 0,
+          voiceXp: 0,
+          totalXp: 0,
+          level: 0,
+          dailyResetAt: startOfDay(now),
+          weeklyResetAt: startOfWeek(now),
+          monthlyResetAt: startOfMonth(now),
+          dailyTextXp: 0,
+          weeklyTextXp: 0,
+          monthlyTextXp: 0,
+          dailyVoiceXp: 0,
+          weeklyVoiceXp: 0,
+          monthlyVoiceXp: 0
+        });
       }
 
       resetScopes(userXp, now);
+
+      userXp.textXp = userXp.textXp || 0;
+      userXp.voiceXp = userXp.voiceXp || 0;
+      userXp.dailyTextXp = userXp.dailyTextXp || 0;
+      userXp.weeklyTextXp = userXp.weeklyTextXp || 0;
+      userXp.monthlyTextXp = userXp.monthlyTextXp || 0;
+      userXp.dailyVoiceXp = userXp.dailyVoiceXp || 0;
+      userXp.weeklyVoiceXp = userXp.weeklyVoiceXp || 0;
+      userXp.monthlyVoiceXp = userXp.monthlyVoiceXp || 0;
+
+      userXp.totalXp = (userXp.textXp || 0) + (userXp.voiceXp || 0);
+      userXp.level = calculateLevel(userXp.totalXp);
       await userXp.save();
+
+      const leaderboardDocs = await UserXP.find({ guildId: message.guild.id })
+        .sort({ totalXp: -1, userId: 1 })
+        .select({ userId: 1, totalXp: 1 });
+
+      const totalRanked = leaderboardDocs.length;
+      const rankIndex = leaderboardDocs.findIndex(entry => entry.userId === member.id);
+      const rankPosition = rankIndex >= 0 ? rankIndex + 1 : totalRanked + 1;
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `معلومات XP`,
+          name: `لوحة XP - ${message.guild.name}`,
           iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
         })
-        .setDescription(`**<@${member.id}> | XP: ${userXp.totalXp} | Level: ${userXp.level}**`)
+        .addFields(
+          {
+            name: '🏅 مستواك',
+            value: `**Level ${userXp.level} • ${userXp.totalXp} XP**`,
+            inline: true
+          },
+          {
+            name: '📊 ترتيبك',
+            value:
+              rankIndex >= 0 && totalRanked > 0
+                ? `**#${rankPosition} من ${totalRanked}**`
+                : `**خارج الترتيب الحالي**`,
+            inline: true
+          },
+          {
+            name: '📝 خبرة كتابية',
+            value: [
+              `**الإجمالي:** ${userXp.textXp} XP`,
+              `**اليومي:** ${userXp.dailyTextXp} XP`,
+              `**الأسبوعي:** ${userXp.weeklyTextXp} XP`,
+              `**الشهري:** ${userXp.monthlyTextXp} XP`
+            ].join('\n'),
+            inline: false
+          },
+          {
+            name: '🎙️ خبرة صوتية',
+            value: [
+              `**الإجمالي:** ${userXp.voiceXp} XP`,
+              `**اليومي:** ${userXp.dailyVoiceXp} XP`,
+              `**الأسبوعي:** ${userXp.weeklyVoiceXp} XP`,
+              `**الشهري:** ${userXp.monthlyVoiceXp} XP`
+            ].join('\n'),
+            inline: false
+          }
+        )
         .setFooter({
-          text: `${message.author.username}`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -603,13 +691,12 @@ module.exports = {
 
     if (isTopCommand) {
       const guardKey = `${message.id}:t`;
-      if (!markProcessed(guardKey, 1000)) return;
+      if (!markProcessed(guardKey, 2000)) return;
 
       const scopeArg = tokens.shift();
       const scope = getTopScopeFromArg(scopeArg);
 
       if (!scope) {
-        clearProcessed(guardKey);
         await sendNoPing(message.channel, {
           embeds: [
             redPanel(
@@ -620,9 +707,8 @@ module.exports = {
         return;
       }
 
-      const topReplyTag = `top:${message.author.id}:${scope}`;
+      const topReplyTag = `top:${message.id}:${scope}`;
       if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
-        clearProcessed(guardKey);
         return;
       }
 
@@ -630,39 +716,40 @@ module.exports = {
       const docs = await UserXP.find({ guildId: message.guild.id });
 
       const dirtyWrites = [];
-      const scopedRows = docs
-        .map(doc => {
-          if (scope !== 'all' && resetScopes(doc, now)) dirtyWrites.push(doc.save());
-          const scoped = getScopedValues(doc, scope, now);
-          const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
-          return {
-            userId: doc.userId,
-            totalXp: scoped.totalXp,
-            level: doc.level ?? calculateLevel(totalForLevel)
-          };
-        })
-        .filter(r => r.totalXp > 0);
+      const rows = docs.map(doc => {
+        if (scope !== 'all' && resetScopes(doc, now)) dirtyWrites.push(doc.save());
+
+        const scoped = getScopedValues(doc, scope, now);
+        const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
+        return {
+          userId: doc.userId,
+          textXp: scoped.textXp,
+          voiceXp: scoped.voiceXp,
+          totalXp: scoped.totalXp,
+          level: doc.level ?? calculateLevel(totalForLevel)
+        };
+      });
+
+      const sortedRows = [...rows].sort((a, b) => b.totalXp - a.totalXp);
+      const rankedRows = sortedRows.map((row, index) => ({ ...row, rank: index + 1 }));
+      const nonZeroRows = rankedRows.filter(row => row.totalXp > 0);
+      const topRows = nonZeroRows.slice(0, TOP_LIMIT);
 
       if (scope !== 'all' && dirtyWrites.length) {
         Promise.allSettled(dirtyWrites).catch(() => {});
       }
 
-      if (!scopedRows.length) {
-        clearProcessed(guardKey);
+      if (!nonZeroRows.length) {
         await sendNoPing(message.channel, {
           embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)]
         });
         return;
       }
 
-      scopedRows.sort((a, b) => b.totalXp - a.totalXp);
-      const withRank = scopedRows.map((r, i) => ({ ...r, rank: i + 1 }));
-      const topRows = withRank.slice(0, TOP_LIMIT);
-
-      const myRow = withRank.find(r => r.userId === message.author.id);
-      const myRankSection = myRow
-        ? `\n\n**رتبتك: #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Level: ${myRow.level}**`
-        : `\n\n**رتبتك: خارج قائمة المتصدرين**`;
+      const myRow = rankedRows.find(row => row.userId === message.author.id);
+      const myRankText = myRow
+        ? `**#${myRow.rank}** | <@${myRow.userId}> | **XP: ${myRow.totalXp}** | **Lv: ${myRow.level}**`
+        : '**لا توجد بيانات عن ترتيبك بعد.**';
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -675,14 +762,24 @@ module.exports = {
         )
         .setDescription(
           [
+            `**Top ${scopeLabel(scope)}**`,
+            '',
             ...topRows.map(
               r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`
             ),
-            myRankSection
-          ].join('\n')
+            '',
+            myRankText
+          ].filter(Boolean).join('\n')
+        )
+        .addFields(
+          { name: '📝 **Top Text XP**', value: formatTopField(topRows, 'textXp'), inline: true },
+          { name: '🎙️ **Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
         )
         .setFooter({
-          text: `${message.author.username}`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
