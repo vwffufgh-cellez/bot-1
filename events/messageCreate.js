@@ -27,7 +27,6 @@ const TOP_ALIASES = ['t', 'top', 'توب'];
 const TOP_LIMIT = 10;
 const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
-// 🔐 ثابت جديد لزمن حجز القفل لأوامر الـTop (10 ثواني)
 const TOP_REPLY_TTL = 10_000;
 
 const recentCommands = new Map();
@@ -36,6 +35,7 @@ const textXpCooldowns = new Map();
 const recentWarnActions = new Map();
 const replyLocks = new Map();
 const MANAGED_REPLY_COOLDOWN = 2000;
+const LEVEL_UP_CHANNEL_ID = null; // ⚡ ضع آيدي القناة هنا لإشعارات رفع المستوى
 
 const sendNoPing = (channel, payload) =>
   channel.send({ allowedMentions: { parse: [] }, ...payload });
@@ -249,6 +249,17 @@ function resetScopes(doc, now) {
 
 const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
 
+// ⚡ دالة إرسال إشعار رفع المستوى
+async function sendLevelUpNotification(member, oldLevel, newLevel, channel) {
+  const messageContent = `***__مبروك يـ <@${member.id}> للي لفل>__ <:E24A_fairlogin:1423276615051378839> __ سويتها ووصلت لـ لفل ${newLevel} , كمل تفاعل ترا شايفك __ <:E24A_sus:1423274050544992306> ***`;
+  
+  try {
+    await channel.send(messageContent);
+  } catch (error) {
+    console.error(`Error sending level up notification:`, error);
+  }
+}
+
 async function grantTextXp(message) {
   const hasPayload = message.content.trim().length > 0 || message.attachments.size > 0;
   if (!hasPayload) return;
@@ -274,6 +285,7 @@ async function grantTextXp(message) {
 
   resetScopes(userXp, now);
 
+  const oldLevel = userXp.level;
   userXp.textXp += xpAmount;
   userXp.dailyTextXp += xpAmount;
   userXp.weeklyTextXp += xpAmount;
@@ -283,6 +295,19 @@ async function grantTextXp(message) {
   userXp.level = calculateLevel(userXp.totalXp);
 
   await userXp.save();
+
+  // ⚡ تحقق من رفع المستوى وإرسال الإشعار
+  if (userXp.level > oldLevel && userXp.level >= 4) {
+    const logChannel = message.guild.channels.cache.get(LEVEL_UP_CHANNEL_ID);
+    if (logChannel) {
+      await sendLevelUpNotification(message.member, oldLevel, userXp.level, logChannel);
+    } else if (process.env.CHANNEL_ID) {
+      const channel = await message.client.channels.fetch(process.env.CHANNEL_ID);
+      if (channel) {
+        await sendLevelUpNotification(message.member, oldLevel, userXp.level, channel);
+      }
+    }
+  }
 }
 
 function getTopScopeFromArg(arg) {
@@ -628,7 +653,6 @@ module.exports = {
     }
 
     if (isTopCommand) {
-      // 🔐 حجز مبدئي سريع لمنع التكرار المزدوج لنفس الرسالة
       const guardKey = `${message.id}:t`;
       if (!markProcessed(guardKey, 2000)) return;
 
@@ -647,7 +671,6 @@ module.exports = {
         return;
       }
 
-      // 🔐 نحجز القفل لهذا الحدث تحديدًا (رسالة + نطاق) قبل الاستعلامات الثقيلة
       const topReplyTag = `top:${message.id}:${scope}`;
       if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
         clearProcessed(guardKey);
@@ -687,12 +710,18 @@ module.exports = {
 
       scopedRows.sort((a, b) => b.totalXp - a.totalXp);
       const withRank = scopedRows.map((r, i) => ({ ...r, rank: i + 1 }));
-      const topRows = withRank.slice(0, TOP_LIMIT);
 
+      // ✅ البحث عن المستخدم الحالي ولو كان خارج Top 5 يظهر له رتبته
       const myRow = withRank.find(r => r.userId === message.author.id);
       const myRankText = myRow
-        ? `**رتبتك: #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Level: ${myRow.level}**`
-        : `**رتبتك: خارج قائمة المتصدرين حالياً**`;
+        ? `**رتبتك #${myRow.rank} | <@${myRow.userId}> | XP: ${myRow.totalXp} | Lv: ${myRow.level}**`
+        : `**رتبتك خارج قائمة المتصدرين الحالية**`;
+
+      // ⚡ عرض ترتيب كامل للجميع وليس فقط الـ Top 5
+      const allRankingsText = withRank
+        .slice(0, 20) // عرض أول 20 ترتيب بدلاً من 10 فقط
+        .map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`)
+        .join('\n');
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
@@ -705,18 +734,24 @@ module.exports = {
         )
         .setDescription(
           [
-            `**Top ${scopeLabel(scope)}**`,
+            `**${scopeLabel(scope)} Top**`,
             '',
-            ...topRows.map(
-              r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`
-            ),
+            allRankingsText,
             '',
             myRankText
           ].join('\n')
         )
         .addFields(
-          { name: '📝 **Top Text XP**', value: formatTopField(topRows, 'textXp'), inline: true },
-          { name: '🎙️ **Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
+          { 
+            name: '📝 Top Text XP', 
+            value: formatTopField(withRank.slice(0, 10), 'textXp'), 
+            inline: true 
+          },
+          { 
+            name: '🎙️ Top Voice XP', 
+            value: formatTopField(withRank.slice(0, 10), 'voiceXp'), 
+            inline: true 
+          }
         )
         .setFooter({
           text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
@@ -730,7 +765,6 @@ module.exports = {
         embed.setImage(TOP_PANEL_IMAGE_URL);
       }
 
-      // ✅ نستخدم sendNoPing لأننا حجزنا القفل يدويًا مسبقًا
       await sendNoPing(message.channel, { embeds: [embed] });
       return;
     }
