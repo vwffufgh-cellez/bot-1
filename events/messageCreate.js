@@ -27,6 +27,9 @@ const TOP_ALIASES = ['t', 'top', 'توب'];
 const TOP_LIMIT = 10;
 const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
+// 🔐 ثابت جديد لزمن حجز القفل لأوامر الـTop (10 ثواني)
+const TOP_REPLY_TTL = 10_000;
+
 const recentCommands = new Map();
 const processedCommands = new Map();
 const textXpCooldowns = new Map();
@@ -99,7 +102,7 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
     .setColor(0xff0000)
     .setTitle('⚠️ **تحذير جديد**')
     .addFields(
-      { name: 'المُحذَّر', value: `**<@${target.id}> (${target.id})**` },
+      { name: 'المُحذَّر', value: `**<@${target.id}> (${target.id})**` },
       { name: 'المُصدر', value: `**<@${modUser.id}> (${modUser.id})**` },
       { name: 'السبب', value: `**${reason}**` },
       { name: 'الوقت', value: `**${new Date().toLocaleString('ar-SA')}**` },
@@ -625,6 +628,7 @@ module.exports = {
     }
 
     if (isTopCommand) {
+      // 🔐 حجز مبدئي سريع لمنع التكرار المزدوج لنفس الرسالة
       const guardKey = `${message.id}:t`;
       if (!markProcessed(guardKey, 2000)) return;
 
@@ -640,6 +644,13 @@ module.exports = {
             )
           ]
         });
+        return;
+      }
+
+      // 🔐 نحجز القفل لهذا الحدث تحديدًا (رسالة + نطاق) قبل الاستعلامات الثقيلة
+      const topReplyTag = `top:${message.id}:${scope}`;
+      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
+        clearProcessed(guardKey);
         return;
       }
 
@@ -719,7 +730,8 @@ module.exports = {
         embed.setImage(TOP_PANEL_IMAGE_URL);
       }
 
-      await sendManagedEmbedOnce(message.channel, `top-${scope}`, { embeds: [embed] }, 1500);
+      // ✅ نستخدم sendNoPing لأننا حجزنا القفل يدويًا مسبقًا
+      await sendNoPing(message.channel, { embeds: [embed] });
       return;
     }
   }
