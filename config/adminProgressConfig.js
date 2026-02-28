@@ -3,7 +3,7 @@ module.exports = {
 
   // رتب الإدارة الأساسية (بالترتيب من 1 إلى 8)
   ADMIN_LEVELS: [
-    { level: 1, roleId: 'ROLE_L1', name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
+    { level: 1, roleId: '1445473101629493383', name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
     { level: 2, roleId: 'ROLE_L2', name: 'إداري 2', req: { tickets: 20, warns: 15, xp: 5000 } },
     { level: 3, roleId: 'ROLE_L3', name: 'إداري 3', req: { tickets: 25, warns: 20, xp: 6000 } },
     { level: 4, roleId: 'ROLE_L4', name: 'إداري 4', req: { tickets: 30, warns: 25, xp: 7000 } },
