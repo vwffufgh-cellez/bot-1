@@ -15,7 +15,7 @@ module.exports = {
 
   // 3 رتب تحذير الإدارة + نسبة زيادة الصعوبة
   ADMIN_WARN_TIERS: [
-    { roleId: 'WARN_ROLE_1', multiplier: 1.4, label: 'تحذير إداري أول' },
+    { roleId: '1445473102359167187', multiplier: 1.4, label: 'تحذير إداري أول' },
     { roleId: 'WARN_ROLE_2', multiplier: 1.6, label: 'تحذير إداري ثاني' },
     { roleId: 'WARN_ROLE_3', multiplier: 1.9, label: 'تحذير إداري ثالث' }
   ],
