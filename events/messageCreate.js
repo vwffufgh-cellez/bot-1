@@ -5,7 +5,11 @@ const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 const Warning = require('../models/Warning');
 const { resetIfNeeded } = require('../utils/resetHelpers');
-const { ALIASES } = require('../config/adminProgressConfig');
+const {
+  ALIASES,
+  TRANSFER_ALIASES,
+  SUPPORT_ROLE_ID
+} = require('../config/adminProgressConfig');
 const {
   getOrCreate,
   addPoints,
@@ -14,10 +18,11 @@ const {
   transferPoints,
   getMultiplier,
   getNextLevelConfig,
-  scaledReq
+  scaledReq,
+  normalizePointKey,
+  getTypeFromAlias
 } = require('../utils/adminProgressService');
 
-const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
@@ -472,6 +477,11 @@ module.exports = {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
 
+      // التحقق من رتبة الإدارة - لا يستجيب لمن ليس لديه الرتبة
+      if (!hasSupportRole) {
+        return; // لا يرد أبداً
+      }
+
       const targetArg = tokens.shift();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
@@ -539,13 +549,65 @@ module.exports = {
       return;
     }
 
+    // أمر التحويل (Transfer) - تحويل نقاط لمستخدم آخر
     if (isConvertCommand) {
       const guardKey = `${message.id}:convert`;
       if (!markProcessed(guardKey)) return;
 
+      // التحقق من صيغة الأمر إذا كان تحويل لشخص آخر
+      // الصيغة: تحويل <نوع> <مستخدم> <كمية>
+      if (tokens.length >= 3) {
+        const typeAlias = tokens[0];
+        const pointType = getTypeFromAlias(typeAlias);
+        
+        if (pointType) {
+          // هذا أمر تحويل لشخص آخر
+          const targetArg = tokens[1];
+          const amountRaw = tokens[2];
+          
+          const targetMember = await fetchMember(message.guild, targetArg);
+          if (!targetMember) {
+            await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو المستهدف.')] });
+            return;
+          }
+
+          const amount = Number(amountRaw);
+          if (!Number.isFinite(amount) || amount <= 0) {
+            await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+            return;
+          }
+
+          const fromDoc = await getOrCreate(message.guild.id, message.author.id);
+          const toDoc = await getOrCreate(message.guild.id, targetMember.id);
+
+          try {
+            await transferPoints(fromDoc, toDoc, pointType, amount);
+            
+            const embed = bluePanel(
+              `**✅ تم تحويل ${POINT_TYPE_EMOJIS[pointType]} ${amount} ${POINT_TYPE_LABELS[pointType]}**\n` +
+              `**إلى:** <@${targetMember.id}>`
+            ).setFooter({
+              text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
+                dateStyle: 'medium',
+                timeStyle: 'short'
+              })}`,
+              iconURL: message.author.displayAvatarURL({ size: 128 })
+            });
+            
+            await sendNoPing(message.channel, { embeds: [embed] });
+          } catch (err) {
+            await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
+          }
+          return;
+        }
+      }
+
+      // إذا لم يكن أمر تحويل، فهو أمر تبديل (Convert)
+      // الصيغة: تحويل <كمية> <من> <إلى>
       let targetMember = message.member;
       let args = tokens;
 
+      // تحقق إذا كان هناك منشن في البداية
       if (args.length >= 4) {
         const maybeMember = await fetchMember(message.guild, args[0]);
         if (maybeMember) {
@@ -560,10 +622,11 @@ module.exports = {
         }
       }
 
-      const [fromType, amountRaw, toType] = args;
-      if (!fromType || !amountRaw || !toType) {
+      const [amountRaw, fromTypeRaw, toTypeRaw] = args;
+      
+      if (!amountRaw || !fromTypeRaw || !toTypeRaw) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام الصحيح: `تحويل [@عضو] <نوع-من> <الكمية> <نوع-إلى>`')]
+          embeds: [redPanel('الاستخدام الصحيح:\n`تحويل <نوع> <@عضو> <كمية>` لتحويل نقاط\n`تحويل <كمية> <من> <إلى>` لتبديل النقاط')]
         });
         return;
       }
@@ -577,7 +640,7 @@ module.exports = {
       const doc = await getOrCreate(message.guild.id, targetMember.id);
 
       try {
-        const result = await convertPoints(doc, fromType, amount, toType);
+        const result = await convertPoints(doc, fromTypeRaw, amount, toTypeRaw);
         const actorText =
           targetMember.id === message.author.id
             ? 'تم تحويل نقاطك بنجاح.'
@@ -707,7 +770,7 @@ module.exports = {
       ticketClaim = new TicketClaim({
         guildId: message.guild.id,
         channelId: message.channel.id,
-        claimedById: message.author.id,
+        adminId: message.author.id, // تعديل: استخدام adminId بدلاً من claimedById
         claimedAt: new Date()
       });
       await ticketClaim.save();
@@ -751,9 +814,9 @@ module.exports = {
         });
         return;
       }
-      if (ticketClaim.claimedById !== message.author.id) {
+      if (ticketClaim.adminId !== message.author.id) { // تعديل: استخدام adminId
         await sendManagedEmbedOnce(message.channel, 'unclaim-other', {
-          embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)]
+          embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.adminId}>).`)] // تعديل: استخدام adminId
         });
         return;
       }
@@ -896,7 +959,13 @@ module.exports = {
       }
 
       const now = Date.now();
-      const docs = await UserXP.find({ guildId: message.guild.id });
+      
+      // جلب جميع الأعضاء والتأكد من أن لديهم رتبة الإدارة
+      const members = await message.guild.members.fetch();
+      const staffMembers = members.filter(m => m.roles.cache.has(SUPPORT_ROLE_ID));
+      const staffIds = new Set(staffMembers.keys());
+
+      const docs = await UserXP.find({ guildId: message.guild.id, userId: { $in: Array.from(staffIds) } });
 
       const dirtyWrites = [];
       const rows = docs.map(doc => {
