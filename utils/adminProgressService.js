@@ -4,7 +4,8 @@ const {
   ADMIN_LEVELS,
   ADMIN_WARN_TIERS,
   POINT_VALUE,
-  PROMOTION_LOG_CHANNEL_ID
+  PROMOTION_LOG_CHANNEL_ID,
+  TRANSFER_ALIASES
 } = require('../config/adminProgressConfig');
 const { redPanel } = require('./panel');
 
@@ -12,14 +13,22 @@ const DOC_KEY_MAP = {
   tickets: 'tickets',
   ticket: 'tickets',
   تكت: 'tickets',
-  تيكت: 'tickets',
+  تداكر: 'tickets',
+  تذاكر: 'tickets',
+  تكتات: 'tickets',
+  ت: 'tickets',
   warns: 'warns',
   warn: 'warns',
   تحذير: 'warns',
   تحذيرات: 'warns',
+  تحدير: 'warns',
+  تحديرات: 'warns',
+  و: 'warns',
   xp: 'xp',
   خبرة: 'xp',
-  اكسبي: 'xp'
+  اكسبي: 'xp',
+  اكس: 'xp',
+  x: 'xp'
 };
 
 const DOC_TO_BASE = {
@@ -31,6 +40,19 @@ const DOC_TO_BASE = {
 function normalizePointKey(input) {
   const key = (input ?? '').toString().toLowerCase();
   return DOC_KEY_MAP[key] || null;
+}
+
+// دالة للتحقق من اختصارات النوع
+function getTypeFromAlias(alias) {
+  if (!alias) return null;
+  const lowerAlias = alias.toLowerCase();
+  
+  for (const [type, aliases] of Object.entries(TRANSFER_ALIASES)) {
+    if (aliases.some(a => a.toLowerCase() === lowerAlias)) {
+      return type;
+    }
+  }
+  return null;
 }
 
 function toBaseFromDocKey(docKey, amount) {
@@ -186,6 +208,7 @@ async function tryPromote(message, member) {
 
     if (!ok) break;
 
+    // خصم المتطلبات فقط والاحتفاظ بالفائض
     doc.points.tickets -= req.tickets;
     doc.points.warns -= req.warns;
     doc.points.xp -= req.xp;
@@ -236,5 +259,7 @@ module.exports = {
   transferPoints,
   getMultiplier,
   getNextLevelConfig,
-  scaledReq
+  scaledReq,
+  normalizePointKey,
+  getTypeFromAlias
 };
