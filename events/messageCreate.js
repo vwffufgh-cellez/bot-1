@@ -4,6 +4,17 @@ const TicketClaim = require('../models/TicketClaim');
 const AdminStats = require('../models/AdminStats');
 const Warning = require('../models/Warning');
 const { resetIfNeeded } = require('../utils/resetHelpers');
+const { ALIASES } = require('../config/adminProgressConfig');
+const {
+  getOrCreate,
+  addPoints,
+  tryPromote,
+  convertPoints,
+  transferPoints,
+  getMultiplier,
+  getNextLevelConfig,
+  scaledReq
+} = require('../utils/adminProgressService');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 const TICKET_PREFIX = 'ticket-';
@@ -164,6 +175,9 @@ async function addWarningAndNotify(message, member, reason) {
   doc.total = (doc.total ?? 0) + 1;
   await doc.save();
 
+  await addPoints({ guildId: message.guild.id, userId: message.author.id, warns: 1 });
+  await tryPromote(message, message.member);
+
   const detailEmbed = warnDetailEmbed({ target: member, moderator: message.member, reason, caseId });
 
   if (DM_USER_ON_WARN) {
@@ -272,6 +286,12 @@ async function grantTextXp(message) {
   textXpCooldowns.set(key, now);
 
   const xpAmount = randomBetween(TEXT_XP_MIN, TEXT_XP_MAX);
+
+  if (message.member?.roles.cache.has(SUPPORT_ROLE_ID)) {
+    await addPoints({ guildId: message.guild.id, userId: message.author.id, xp: xpAmount });
+    await tryPromote(message, message.member);
+  }
+
   let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: message.author.id });
 
   if (!userXp) {
@@ -402,6 +422,9 @@ module.exports = {
     const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
     const isXpCommand = XP_ALIASES.includes(command);
     const isTopCommand = TOP_ALIASES.includes(command);
+    const isTasksCommand = ALIASES.TASKS.includes(command);
+    const isStatsCommand = ALIASES.STATS.includes(command);
+    const isConvertCommand = ALIASES.CONVERT.includes(command);
 
     if (
       !(
@@ -410,7 +433,10 @@ module.exports = {
         isClaimCommand ||
         isUnclaimCommand ||
         isXpCommand ||
-        isTopCommand
+        isTopCommand ||
+        isTasksCommand ||
+        isStatsCommand ||
+        isConvertCommand
       )
     ) {
       return;
@@ -420,6 +446,30 @@ module.exports = {
 
     const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
     const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+
+    if (isTasksCommand) {
+      const guardKey = `${message.id}:tasks`;
+      if (!markProcessed(guardKey)) return;
+
+      await sendNoPing(message.channel, { embeds: [redPanel('أمر المهام سيتم تفعيله لاحقاً.')] });
+      return;
+    }
+
+    if (isStatsCommand) {
+      const guardKey = `${message.id}:stats`;
+      if (!markProcessed(guardKey)) return;
+
+      await sendNoPing(message.channel, { embeds: [redPanel('أمر الستات قيد الإعداد حالياً.')] });
+      return;
+    }
+
+    if (isConvertCommand) {
+      const guardKey = `${message.id}:convert`;
+      if (!markProcessed(guardKey)) return;
+
+      await sendNoPing(message.channel, { embeds: [redPanel('نظام التحويل سيُفعّل قريباً.')] });
+      return;
+    }
 
     if (isWarnCommand) {
       const guardKey = `${message.id}:warn`;
@@ -529,6 +579,9 @@ module.exports = {
         claimedAt: new Date()
       });
       await ticketClaim.save();
+
+      await addPoints({ guildId: message.guild.id, userId: message.author.id, tickets: 1 });
+      await tryPromote(message, message.member);
 
       await AdminStats.findOneAndUpdate(
         { guildId: message.guild.id, adminId: message.author.id },
