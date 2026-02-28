@@ -1,9 +1,5 @@
-// config/adminProgressConfig.js
 module.exports = {
   PROMOTION_LOG_CHANNEL_ID: '1463932026595053641',
-  
-  // رتبة الإدارة الأساسية
-  SUPPORT_ROLE_ID: '1445473101629493383',
 
   ADMIN_LEVELS: [
     { level: 1, roleId: '1445473101629493383', name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
@@ -16,11 +12,11 @@ module.exports = {
     { level: 8, roleId: '1445473101629493383', name: 'إداري 8', req: { tickets: 50, warns: 50, xp: 11000 } }
   ],
 
- TRANSFER_ALIASES: {
-  tickets: ['تكت', 'تداكر', 'تذاكر', 'تكتات', 'ticket', 'tickets', 'ت'],
-  warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns', 'و'],
-  xp: ['اكسبي', 'XP', 'xp', 'خبرة', 'اكس', 'x']
-}
+  ADMIN_WARN_TIERS: [
+    { roleId: '1445473102359167187', multiplier: 1.6, label: 'تحذير إداري أول' },
+    { roleId: '1445473102359167187', multiplier: 1.8, label: 'تحذير إداري ثاني' },
+    { roleId: '1445473102359167187', multiplier: 2.1, label: 'تحذير إداري ثالث' }
+  ],
 
   POINT_VALUE: {
     ticket: 300,
@@ -28,17 +24,16 @@ module.exports = {
     xp: 1
   },
 
-  // إضافة اختصارات الأوامر
   ALIASES: {
     TASKS: ['المهام', 'مهام'],
     STATS: ['ستات', 'stats'],
-    CONVERT: ['تحويل', 'convert']
+    CONVERT: ['تحويل', 'convert'],
+    SWAP: ['تبديل', 'swap']
   },
 
-  // اختصارات أنواع النقاط للتحويل والتحويلات
-  TRANSFER_ALIASES: {
-    tickets: ['تكت', 'تداكر', 'تذاكر', 'تكتات', 'ticket', 'tickets', 'ت'},
-    warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns', 'و'],
-    xp: ['اكسبي', 'XP', 'xp', 'خبرة', 'اكس', 'x']
+  POINT_ALIASES: {
+    tickets: ['تكت', 'تداكر', 'تذاكر', 'تكتات', 'ticket', 'tickets'],
+    warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns'],
+    xp: ['اكسبي', 'خبرة', 'xp', 'XP']
   }
 };
