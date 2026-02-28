@@ -16,12 +16,11 @@ module.exports = {
     { level: 8, roleId: '1445473101629493383', name: 'إداري 8', req: { tickets: 50, warns: 50, xp: 11000 } }
   ],
 
-  // تعديل المضاعفات لتصبح 60%، 80%، و110%
-  ADMIN_WARN_TIERS: [
-    { roleId: '1445473102359167187', multiplier: 1.6, label: 'تحذير إداري أول' },
-    { roleId: '1445473102359167187', multiplier: 1.8, label: 'تحذير إداري ثاني' },
-    { roleId: '1445473102359167187', multiplier: 2.1, label: 'تحذير إداري ثالث' }
-  ],
+ TRANSFER_ALIASES: {
+  tickets: ['تكت', 'تداكر', 'تذاكر', 'تكتات', 'ticket', 'tickets', 'ت'],
+  warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns', 'و'],
+  xp: ['اكسبي', 'XP', 'xp', 'خبرة', 'اكس', 'x']
+}
 
   POINT_VALUE: {
     ticket: 300,
