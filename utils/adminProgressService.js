@@ -4,27 +4,18 @@ const {
   ADMIN_LEVELS,
   ADMIN_WARN_TIERS,
   POINT_VALUE,
-  PROMOTION_LOG_CHANNEL_ID
+  PROMOTION_LOG_CHANNEL_ID,
+  POINT_TYPE_ALIASES
 } = require('../config/adminProgressConfig');
+const { redPanel } = require('./panel');
 
-const DOC_KEY_MAP = {
-  tickets: 'tickets',
-  ticket: 'tickets',
-  تكت: 'tickets',
-  تيكت: 'tickets',
-  تذاكر: 'tickets',
-  تداكر: 'tickets',
-  تكتات: 'tickets',
-  warns: 'warns',
-  warn: 'warns',
-  تحذير: 'warns',
-  تحذيرات: 'warns',
-  تحديرات: 'warns',
-  تحدير: 'warns',
-  xp: 'xp',
-  خبرة: 'xp',
-  اكسبي: 'xp'
-};
+// بناء خريطة الاختصارات ديناميكياً
+const DOC_KEY_MAP = {};
+for (const [docKey, aliases] of Object.entries(POINT_TYPE_ALIASES)) {
+  for (const alias of aliases) {
+    DOC_KEY_MAP[alias.toLowerCase()] = docKey;
+  }
+}
 
 const DOC_TO_BASE = {
   tickets: 'ticket',
@@ -33,7 +24,7 @@ const DOC_TO_BASE = {
 };
 
 function normalizePointKey(input) {
-  const key = (input ?? '').toString().toLowerCase();
+  const key = (input ?? '').toString().toLowerCase().trim();
   return DOC_KEY_MAP[key] || null;
 }
 
@@ -55,6 +46,7 @@ function fromBaseToDocKey(docKey, baseAmount) {
 
 function ensurePointBuckets(doc) {
   let dirty = false;
+
   if (!doc.points) {
     doc.points = { tickets: 0, warns: 0, xp: 0 };
     dirty = true;
@@ -66,6 +58,7 @@ function ensurePointBuckets(doc) {
       }
     }
   }
+
   if (!doc.lifetime) {
     doc.lifetime = { tickets: 0, warns: 0, xp: 0 };
     dirty = true;
@@ -77,6 +70,7 @@ function ensurePointBuckets(doc) {
       }
     }
   }
+
   return dirty;
 }
 
@@ -111,48 +105,35 @@ function scaledReq(req, multiplier) {
 
 async function addPoints({ guildId, userId, tickets = 0, warns = 0, xp = 0 }) {
   const doc = await getOrCreate(guildId, userId);
+
   doc.points.tickets += tickets;
   doc.points.warns += warns;
   doc.points.xp += xp;
+
   doc.lifetime.tickets += tickets;
   doc.lifetime.warns += warns;
   doc.lifetime.xp += xp;
+
   await doc.save();
   return doc;
 }
 
-async function transferPointsToUser(fromDoc, toDoc, typeRaw, amount) {
-  ensurePointBuckets(fromDoc);
-  ensurePointBuckets(toDoc);
-
-  const docKey = normalizePointKey(typeRaw);
-  if (!docKey) throw new Error('نوع النقاط غير معروف.');
-  if (amount <= 0) throw new Error('الكمية يجب أن تكون أكبر من 0.');
-  if (fromDoc.points[docKey] < amount) throw new Error('نقاطك غير كافية.');
-
-  fromDoc.points[docKey] -= amount;
-  toDoc.points[docKey] += amount;
-  toDoc.lifetime[docKey] += amount;
-
-  await Promise.all([fromDoc.save(), toDoc.save()]);
-  return { type: docKey, amount };
-}
-
-async function swapPoints(doc, fromTypeRaw, amount, toTypeRaw) {
+// تبديل النقاط بين الأنواع (للمستخدم نفسه)
+async function convertPoints(doc, fromTypeRaw, amount, toTypeRaw) {
   ensurePointBuckets(doc);
 
   const fromKey = normalizePointKey(fromTypeRaw);
   const toKey = normalizePointKey(toTypeRaw);
 
   if (!fromKey || !toKey) throw new Error('نوع النقاط غير معروف.');
-  if (fromKey === toKey) throw new Error('لا يمكن التبادل لنفس النوع.');
-  if (amount <= 0) throw new Error('الكمية يجب أن تكون أكبر من 0.');
+  if (fromKey === toKey) throw new Error('لا يمكن التبديل لنفس النوع.');
+  if (amount <= 0) throw new Error('الكمية لازم تكون أكبر من 0.');
   if (doc.points[fromKey] < amount) throw new Error('نقاطك غير كافية.');
 
   const base = toBaseFromDocKey(fromKey, amount);
   const out = fromBaseToDocKey(toKey, base);
 
-  if (out <= 0) throw new Error('ناتج التبادل أقل من 1.');
+  if (out <= 0) throw new Error('ناتج التبديل أقل من 1.');
 
   doc.points[fromKey] -= amount;
   doc.points[toKey] += out;
@@ -166,14 +147,32 @@ async function swapPoints(doc, fromTypeRaw, amount, toTypeRaw) {
   };
 }
 
+// تحويل النقاط لشخص آخر
+async function transferPoints(fromDoc, toDoc, typeRaw, amount) {
+  ensurePointBuckets(fromDoc);
+  ensurePointBuckets(toDoc);
+
+  const docKey = normalizePointKey(typeRaw);
+  if (!docKey) throw new Error('نوع النقاط غير معروف.');
+  if (amount <= 0) throw new Error('الكمية لازم تكون أكبر من 0.');
+  if (fromDoc.points[docKey] < amount) throw new Error('نقاطك غير كافية.');
+
+  fromDoc.points[docKey] -= amount;
+  toDoc.points[docKey] += amount;
+
+  await Promise.all([fromDoc.save(), toDoc.save()]);
+
+  return { docKey, amount };
+}
+
 async function tryPromote(message, member) {
   const doc = await getOrCreate(message.guild.id, member.id);
+
   let promoted = false;
-  let oldLevel = doc.level;
-  let finalLevel = doc.level;
+  const oldLevel = doc.level;
 
   while (true) {
-    const nextCfg = getNextLevelConfig(finalLevel);
+    const nextCfg = getNextLevelConfig(doc.level);
     if (!nextCfg) break;
 
     const mult = getMultiplier(member);
@@ -186,18 +185,17 @@ async function tryPromote(message, member) {
 
     if (!ok) break;
 
+    // خصم النقاط المطلوبة فقط (الزائد يبقى للمرحلة التالية)
     doc.points.tickets -= req.tickets;
     doc.points.warns -= req.warns;
     doc.points.xp -= req.xp;
 
-    finalLevel = nextCfg.level;
+    doc.level = nextCfg.level;
+    doc.promotedAt = new Date();
     promoted = true;
   }
 
   if (!promoted) return null;
-  
-  doc.level = finalLevel;
-  doc.promotedAt = new Date();
   await doc.save();
 
   const warnTierRoleIds = ADMIN_WARN_TIERS.map(t => t.roleId).filter(Boolean);
@@ -206,38 +204,39 @@ async function tryPromote(message, member) {
     await member.roles.remove(toRemove).catch(() => {});
   }
 
-  const newCfg = ADMIN_LEVELS.find(x => x.level === finalLevel);
+  const newCfg = ADMIN_LEVELS.find(x => x.level === doc.level);
   if (newCfg?.roleId && !member.roles.cache.has(newCfg.roleId)) {
     await member.roles.add(newCfg.roleId).catch(() => {});
   }
 
   const logChannel = message.guild.channels.cache.get(PROMOTION_LOG_CHANNEL_ID);
   if (logChannel) {
-    const embed = new EmbedBuilder()
-      .setColor(0x0099ff)
-      .setDescription(
-        `**الاداري:** <@${member.id}>\n` +
-        `**الترقية:** ${newCfg?.name || `Level ${finalLevel}`}\n` +
-        `**الرتبة السابقة:** ${oldLevel === 0 ? 'لا يوجد' : `Level ${oldLevel}`}`
-      );
-    
-    await logChannel.send({
-      embeds: [embed],
-      allowedMentions: { parse: [] }
-    }).catch(() => {});
+    await logChannel
+      .send({
+        embeds: [
+          redPanel(
+            `الاداري : <@${member.id}>\n` +
+              `الترقية : **${newCfg?.name || `Level ${doc.level}`}**\n` +
+              `الرتبة يلي قبل : **${oldLevel === 0 ? 'لا يوجد' : `Level ${oldLevel}`}**`
+          )
+        ],
+        allowedMentions: { parse: [] }
+      })
+      .catch(() => {});
   }
 
-  return { oldLevel, newLevel: finalLevel };
+  return { oldLevel, newLevel: doc.level };
 }
 
 module.exports = {
   getOrCreate,
   addPoints,
   tryPromote,
-  transferPointsToUser,
-  swapPoints,
+  convertPoints,
+  transferPoints,
   getMultiplier,
   getNextLevelConfig,
   scaledReq,
-  normalizePointKey
+  normalizePointKey,
+  ensurePointBuckets
 };
