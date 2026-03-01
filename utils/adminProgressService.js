@@ -4,10 +4,18 @@ const AdminProgress = require('../models/AdminProgress');
 const {
   LEVEL_CONFIGS,
   POINT_TYPE_ALIASES,
-  WARNING_ROLE_IDS = []
+  SUPPORT_ROLE_ID,
+  PROMOTION_ANNOUNCE_CHANNEL_ID,
+  WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS
 } = require('../config/adminProgressConfig');
 
-// دالة للحصول على أو إنشاء سجل الإداري
+const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
+  ? CFG_WARNING_ROLE_IDS
+  : String(process.env.WARNING_ROLE_IDS || '')
+      .split(',')
+      .map(v => v.trim())
+      .filter(Boolean);
+
 async function getOrCreate(guildId, adminId) {
   let doc = await AdminProgress.findOne({ guildId, adminId });
   if (!doc) {
@@ -38,18 +46,13 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-function getMultiplier(member) {
+function getMultiplier() {
   return 1.0;
 }
 
 function getNextLevelConfig(currentLevel) {
   if (!Array.isArray(LEVEL_CONFIGS)) return null;
   return LEVEL_CONFIGS.find(cfg => cfg.level === currentLevel + 1) || null;
-}
-
-function getLevelConfig(level) {
-  if (!Array.isArray(LEVEL_CONFIGS)) return null;
-  return LEVEL_CONFIGS.find(cfg => cfg.level === level) || null;
 }
 
 function scaledReq(req, multiplier) {
@@ -126,54 +129,64 @@ function roleMentions(roleIds = []) {
   return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-async function syncRolesByLevel(guild, member, fromRoles = [], toRoles = [], removeExtra = []) {
-  const toRemove = [...new Set([...(fromRoles || []), ...(removeExtra || [])])];
-  const toAdd = [...new Set(toRoles || [])];
+async function syncMemberRolesForLevel(member, fromLevel, toLevel) {
+  const fromCfg = LEVEL_CONFIGS.find(cfg => cfg.level === fromLevel) || { roles: [] };
+  const toCfg = LEVEL_CONFIGS.find(cfg => cfg.level === toLevel) || { roles: [] };
 
-  const removed = [];
-  const added = [];
+  const fromRoles = Array.isArray(fromCfg.roles) ? fromCfg.roles : [];
+  const toRoles = Array.isArray(toCfg.roles) ? toCfg.roles : [];
 
-  for (const roleId of toRemove) {
+  const removeSet = [...new Set([...fromRoles, ...WARNING_ROLE_IDS])];
+  const removedRoles = [];
+  const addedRoles = [];
+
+  for (const roleId of removeSet) {
     try {
       if (member.roles.cache.has(roleId)) {
         await member.roles.remove(roleId);
-        removed.push(roleId);
+        removedRoles.push(roleId);
       }
     } catch (err) {
       console.error('Error removing role:', err);
     }
   }
 
-  for (const roleId of toAdd) {
+  for (const roleId of toRoles) {
     try {
       if (!member.roles.cache.has(roleId)) {
         await member.roles.add(roleId);
-        added.push(roleId);
+        addedRoles.push(roleId);
       }
     } catch (err) {
       console.error('Error adding role:', err);
     }
   }
 
-  return { removed, added };
+  return { removedRoles, addedRoles, fromCfg, toCfg };
 }
 
-// ترقية: DM فقط افتراضيًا + منشن داخل البنل + حذف "المتبقي بعد الترحيل"
-async function tryPromote(interactionOrMessage, member, options = {}) {
+/**
+ * ترقية:
+ * - يخصم المطلوب
+ * - يرحّل الفائض
+ * - يزيل رتب المستوى القديم + رتب التحذيرات
+ * - يضيف رتب المستوى الجديد
+ * - إرسال بنل بالقناة + DM
+ * - بدون reply مباشر
+ */
+async function tryPromote(message, member, options = {}) {
   if (!member?.guild) return { promoted: false };
 
-  const announceInChannel = options.announceInChannel ?? false;
+  const announceInChannel = options.announceInChannel ?? true;
   const dmOnPromote = options.dmOnPromote ?? true;
 
   const guild = member.guild;
   const doc = await getOrCreate(guild.id, member.id);
   const multiplier = getMultiplier(member);
 
-  const startingLevel = doc.level || 0;
+  const startingLevel = doc.level;
   let promotedCount = 0;
   const consumed = { tickets: 0, warns: 0, xp: 0 };
-
-  const startingCfg = getLevelConfig(startingLevel) || { level: startingLevel, name: `Level ${startingLevel}`, roles: [] };
 
   while (true) {
     const nextCfg = getNextLevelConfig(doc.level);
@@ -206,29 +219,28 @@ async function tryPromote(interactionOrMessage, member, options = {}) {
 
   await doc.save();
 
-  const finalCfg = getLevelConfig(doc.level) || { level: doc.level, name: `Level ${doc.level}`, roles: [] };
-  const oldRoles = Array.isArray(startingCfg.roles) ? startingCfg.roles : [];
-  const newRoles = Array.isArray(finalCfg.roles) ? finalCfg.roles : [];
+  const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
+    member,
+    startingLevel,
+    doc.level
+  );
 
-  const warningRoles = Array.isArray(WARNING_ROLE_IDS) ? WARNING_ROLE_IDS : [];
-  const syncResult = await syncRolesByLevel(guild, member, oldRoles, newRoles, warningRoles);
+  const oldLevelName = fromCfg?.name || `Level ${startingLevel}`;
+  const newLevelName = toCfg?.name || `Level ${doc.level}`;
 
-  const removedWarningRoles = (syncResult.removed || []).filter(id => warningRoles.includes(id));
-
-  const embed = new EmbedBuilder()
+  const promoteEmbed = new EmbedBuilder()
     .setColor(0xff0000)
     .setTitle('🚀 ترقية إداري')
     .setDescription(
       [
-        `**تهانينا <@${member.id}>!**`,
-        `تمت ترقيتك بنجاح.`,
+        `**الإداري:** <@${member.id}>`,
+        `**من مستوى:** ${startingLevel}`,
+        `**إلى مستوى:** ${doc.level}`,
+        `**الرتبة السابقة:** ${oldLevelName}`,
+        `**الرتبة الجديدة:** ${newLevelName}`,
         '',
-        `**من مستوى:** ${startingCfg.name || `Level ${startingLevel}`}`,
-        `**إلى مستوى:** ${finalCfg.name || `Level ${doc.level}`}`,
-        '',
-        `**الرتب السابقة:** ${roleMentions(oldRoles)}`,
-        `**الرتب الجديدة:** ${roleMentions(newRoles)}`,
-        `**رتب التحذيرات المحذوفة:** ${roleMentions(removedWarningRoles)}`,
+        `**الرتب المحذوفة:** ${roleMentions(removedRoles)}`,
+        `**الرتب المضافة:** ${roleMentions(addedRoles)}`,
         '',
         `**المطلوب المخصوم خلال الترقية:**`,
         `🎟️ تذاكر: ${consumed.tickets}`,
@@ -241,21 +253,36 @@ async function tryPromote(interactionOrMessage, member, options = {}) {
       iconURL: member.displayAvatarURL({ size: 128 })
     });
 
-  if (dmOnPromote) {
-    try {
-      await member.send({ embeds: [embed] });
-    } catch {}
+  if (announceInChannel) {
+    const announceChannel = guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
+    if (announceChannel) {
+      try {
+        await announceChannel.send({
+          content: `<@&${SUPPORT_ROLE_ID}>`,
+          allowedMentions: { roles: [SUPPORT_ROLE_ID] },
+          embeds: [promoteEmbed]
+        });
+      } catch (err) {
+        console.error('Error sending promotion announcement:', err);
+      }
+    }
   }
 
-  if (announceInChannel) {
+  if (dmOnPromote) {
     try {
-      const channel = interactionOrMessage?.channel;
-      if (channel) {
-        await channel.send({
-          allowedMentions: { parse: [] },
-          embeds: [embed]
-        });
-      }
+      const dmEmbed = new EmbedBuilder()
+        .setColor(0xff0000)
+        .setTitle('🎉 مبروك لقد ترقيت تهانينا')
+        .setDescription(
+          [
+            `**<@${member.id}>**`,
+            `تمت ترقيتك بنجاح.`,
+            `**من:** ${oldLevelName}`,
+            `**إلى:** ${newLevelName}`
+          ].join('\n')
+        );
+
+      await member.send({ embeds: [dmEmbed] });
     } catch {}
   }
 
@@ -263,14 +290,22 @@ async function tryPromote(interactionOrMessage, member, options = {}) {
     promoted: true,
     fromLevel: startingLevel,
     toLevel: doc.level,
-    fromName: startingCfg.name || `Level ${startingLevel}`,
-    toName: finalCfg.name || `Level ${doc.level}`,
-    removedWarningRoles
+    fromName: oldLevelName,
+    toName: newLevelName,
+    removedRoles,
+    addedRoles
   };
 }
 
-// كسر رتبة واحدة
-async function demoteOneLevel(guild, member) {
+/**
+ * تنزيل مستوى واحد للخلف (Demote)
+ */
+async function demoteOneLevel(guild, member, options = {}) {
+  const reason = String(options.reason || '').trim();
+  if (!reason) {
+    throw new Error('لا يمكن تنفيذ كسر بدون سبب.');
+  }
+
   const doc = await getOrCreate(guild.id, member.id);
   if (!doc || (doc.level ?? 0) <= 0) {
     throw new Error('هذا العضو في أقل مستوى بالفعل.');
@@ -279,21 +314,24 @@ async function demoteOneLevel(guild, member) {
   const fromLevel = doc.level;
   const toLevel = fromLevel - 1;
 
-  const fromCfg = getLevelConfig(fromLevel) || { level: fromLevel, name: `Level ${fromLevel}`, roles: [] };
-  const toCfg = getLevelConfig(toLevel) || { level: toLevel, name: `Level ${toLevel}`, roles: [] };
-
   doc.level = toLevel;
+  doc.promotedAt = new Date();
   await doc.save();
 
-  const oldRoles = Array.isArray(fromCfg.roles) ? fromCfg.roles : [];
-  const newRoles = Array.isArray(toCfg.roles) ? toCfg.roles : [];
-  await syncRolesByLevel(guild, member, oldRoles, newRoles, []);
+  const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
+    member,
+    fromLevel,
+    toLevel
+  );
 
   return {
     fromLevel,
     toLevel,
-    fromName: fromCfg.name || `Level ${fromLevel}`,
-    toName: toCfg.name || `Level ${toLevel}`
+    fromName: fromCfg?.name || `Level ${fromLevel}`,
+    toName: toCfg?.name || `Level ${toLevel}`,
+    removedRoles,
+    addedRoles,
+    reason
   };
 }
 
