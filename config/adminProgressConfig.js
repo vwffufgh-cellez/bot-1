@@ -3,7 +3,7 @@
 const SUPPORT_ROLE_ID = '1445473101629493383';
 
 const ADMIN_LEVELS = [
-  { level: 1, roleId: 1445473097888170105, name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
+  { level: 1, roleId: '1445473097888170105', name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
   { level: 2, roleId: SUPPORT_ROLE_ID, name: 'إداري 2', req: { tickets: 20, warns: 15, xp: 5000 } },
   { level: 3, roleId: SUPPORT_ROLE_ID, name: 'إداري 3', req: { tickets: 25, warns: 20, xp: 6000 } },
   { level: 4, roleId: SUPPORT_ROLE_ID, name: 'إداري 4', req: { tickets: 30, warns: 25, xp: 7000 } },
@@ -23,18 +23,17 @@ const LEVEL_CONFIGS = ADMIN_LEVELS.map(lvl => ({
 
 module.exports = {
   // قنوات الترقية
-  PROMOTION_LOG_CHANNEL_ID: '1463932026595053641',          // من ملفك الأساسي
-  PROMOTION_ANNOUNCE_CHANNEL_ID: '1463932101496799252',     // القناة التي طلبتها لإعلان الترقية
+  PROMOTION_LOG_CHANNEL_ID: '1463932026595053641',
+  PROMOTION_ANNOUNCE_CHANNEL_ID: '1463932101496799252',
 
   SUPPORT_ROLE_ID,
 
-  // إعدادات المستويات الأصلية (محفوظة كما هي)
+  // إعدادات المستويات الأصلية
   ADMIN_LEVELS,
 
   // إعدادات متوافقة مع الخدمات الجديدة
   LEVEL_CONFIGS,
 
-  // تعديل المضاعفات (محفوظ كما هو)
   ADMIN_WARN_TIERS: [
     { roleId: '1445473102359167187', multiplier: 1.6, label: 'تحذير إداري أول' },
     { roleId: '1445473102359167188', multiplier: 1.8, label: 'تحذير إداري ثاني' },
@@ -47,7 +46,6 @@ module.exports = {
     xp: 1
   },
 
-  // اختصارات الأوامر (مدموجة: القديم + الجديد + توسعة)
   ALIASES: {
     TASKS: ['المهام', 'مهام', 'tasks', 'task', 'مهمة'],
     STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'],
@@ -56,7 +54,6 @@ module.exports = {
     EDIT: ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل']
   },
 
-  // اختصارات أنواع النقاط (مدموجة وموسعة)
   POINT_TYPE_ALIASES: {
     tickets: ['تكت', 'تذاكر', 'تكتات', 'تذكرة', 'ticket', 'tickets', 'tkt'],
     warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'تحذيراتك', 'warn', 'warns', 'warning', 'warnings'],
