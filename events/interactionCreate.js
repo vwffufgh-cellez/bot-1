@@ -1,3 +1,4 @@
+// events/interactionCreate.js
 const { EmbedBuilder } = require('discord.js');
 const TicketClaim = require('../models/TicketClaim');
 const { addPoints, tryPromote } = require('../utils/adminProgressService');
@@ -31,7 +32,7 @@ module.exports = {
 
       if (existing) {
         return interaction.reply({
-          embeds: [redPanel('هذه التذكرة مستلمة مسبقاً.')],
+          embeds: [redPanel('هذه التذكرة مستلمة بالفعل.')],
           ephemeral: true
         });
       }
@@ -43,29 +44,36 @@ module.exports = {
         claimedAt: new Date()
       });
 
-      await addPoints({ guildId: interaction.guild.id, userId: interaction.user.id, tickets: 1 });
-      await tryPromote(interaction, interaction.member);
+      // إضافة نقطة تذكرة + محاولة ترقية
+      try {
+        await addPoints({
+          guildId: interaction.guild.id,
+          userId: interaction.user.id,
+          tickets: 1
+        });
+        await tryPromote(interaction, interaction.member);
+      } catch (err) {
+        console.error('Error in promotion after confirm_claim:', err);
+      }
 
       await interaction.reply({
-        embeds: [redPanel('تم تسجيل التذكرة باسمك بنجاح.')],
+        embeds: [redPanel('تم تسجيل هذه التذكرة لك بنجاح.')],
         ephemeral: true
       });
 
       await interaction.channel.send({
-        embeds: [redPanel(`تم استلام التذكرة بواسطة ${interaction.user.username}`)]
+        embeds: [redPanel(`تم استلام التذكرة بواسطة **${interaction.user.username}**.`)]
       });
-
     } catch (error) {
       console.error('Error in confirm_claim button:', error);
-
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
-          embeds: [redPanel('حدث خطأ أثناء استلام التذكرة.')],
+          embeds: [redPanel('حدث خطأ أثناء محاولة استلام التذكرة.')],
           ephemeral: true
         });
       } else {
         await interaction.followUp({
-          embeds: [redPanel('حدث خطأ أثناء استلام التذكرة.')],
+          embeds: [redPanel('حدث خطأ أثناء محاولة استلام التذكرة.')],
           ephemeral: true
         });
       }
