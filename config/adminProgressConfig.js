@@ -3,7 +3,7 @@
 const SUPPORT_ROLE_ID = '1445473101629493383';
 
 const ADMIN_LEVELS = [
-  { level: 1, roleId: SUPPORT_ROLE_ID, name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
+  { level: 1, roleId: 1445473097888170105, name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
   { level: 2, roleId: SUPPORT_ROLE_ID, name: 'إداري 2', req: { tickets: 20, warns: 15, xp: 5000 } },
   { level: 3, roleId: SUPPORT_ROLE_ID, name: 'إداري 3', req: { tickets: 25, warns: 20, xp: 6000 } },
   { level: 4, roleId: SUPPORT_ROLE_ID, name: 'إداري 4', req: { tickets: 30, warns: 25, xp: 7000 } },
