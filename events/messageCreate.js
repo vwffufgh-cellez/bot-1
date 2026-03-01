@@ -33,6 +33,10 @@ const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
 const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_ALIASES = ['t', 'top', 'توب'];
 
+// إضافة اختصارات لأمر التعديل
+const EDIT_ALIASES = ['تعديل', 'edit', 'mod'];
+ALIASES.EDIT = EDIT_ALIASES; // للتوافق مع config إذا كان موجوداً
+
 const TEXT_XP_MIN = 15;
 const TEXT_XP_MAX = 25;
 const TEXT_XP_COOLDOWN = 60_000;
@@ -457,6 +461,8 @@ module.exports = {
     const isStatsCommand = ALIASES.STATS.includes(command);
     const isConvertCommand = ALIASES.CONVERT.includes(command);
     const isTransferCommand = ALIASES.TRANSFER.includes(command);
+    // إضافة فحص أمر التعديل
+    const isEditCommand = EDIT_ALIASES.includes(command);
 
     if (
       !(
@@ -469,7 +475,8 @@ module.exports = {
         isTasksCommand ||
         isStatsCommand ||
         isConvertCommand ||
-        isTransferCommand
+        isTransferCommand ||
+        isEditCommand
       )
     ) {
       return;
@@ -736,6 +743,80 @@ module.exports = {
       } catch (err) {
         await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
       }
+      return;
+    }
+
+    // إضافة أمر التعديل (فقط لـ ID محدد)
+    if (isEditCommand) {
+      const guardKey = `${message.id}:edit`;
+      if (!markProcessed(guardKey)) return;
+
+      // فقط للمستخدم ذو الـ ID 1086312520874217644
+      if (message.author.id !== '1086312520874217644') {
+        return; // لا رد، فقط تجاهل
+      }
+
+      if (tokens.length < 2) {
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الاستخدام: `تعديل <نوع> <كمية> [@عضو اختياري]`\nمثال: `تعديل تكت 1000` أو `تعديل تحذيرات @user 500`')]
+        });
+        return;
+      }
+
+      const typeArg = tokens[0];
+      const amountArg = tokens[1];
+      const targetArg = tokens[2]; // اختياري
+
+      const pointType = normalizePointKey(typeArg);
+      if (!pointType) {
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('نوع غير معروف. استخدم: تكت، تحذيرات، xp، إلخ.')]
+        });
+        return;
+      }
+
+      const amount = Number(amountArg);
+      if (!Number.isFinite(amount) || amount < 0) { // سمح بـ 0 للصفر
+        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح (0 أو أكبر).')] });
+        return;
+      }
+
+      let targetMember = message.member;
+      let targetId = message.author.id;
+
+      if (targetArg) {
+        targetMember = await fetchMember(message.guild, targetArg);
+        if (!targetMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+        if (!targetMember.roles.cache.has(SUPPORT_ROLE_ID)) {
+          await sendNoPing(message.channel, { embeds: [redPanel('العضو المستهدف ليس إدارياً.')] });
+          return;
+        }
+        targetId = targetMember.id;
+      }
+
+      const doc = await getOrCreate(message.guild.id, targetId);
+
+      // تحديث points و lifetime
+      doc.points[pointType] += amount;
+      doc.lifetime[pointType] += amount;
+      await doc.save();
+
+      // محاولة ترقية بعد التعديل
+      await tryPromote(message, targetMember);
+
+      const changeType = amount > 0 ? 'إضافة' : (amount === 0 ? 'تعيين' : 'خصم');
+      const embed = greenPanel(
+        `**تم ${changeType} ${amount} ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetId}> بنجاح!**`,
+        '✏️ تعديل الإحصائيات'
+      ).setFooter({
+        text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+        iconURL: message.author.displayAvatarURL({ size: 128 })
+      });
+
+      await sendNoPing(message.channel, { embeds: [embed] });
       return;
     }
 
