@@ -153,14 +153,49 @@ const extractIdFromMention = arg => {
   return null;
 };
 
+// محسّن: يجلب العضو حتى لو أوفلاين (منشن/آيدي/username#1234/username/displayName)
 const fetchMember = async (guild, arg) => {
-  const id = extractIdFromMention(arg);
-  if (!id) return null;
-  try {
-    return await guild.members.fetch(id);
-  } catch {
-    return null;
+  if (!arg) return null;
+  const raw = String(arg).trim();
+
+  // 1) mention / id
+  const id = extractIdFromMention(raw);
+  if (id) {
+    try {
+      return await guild.members.fetch({ user: id, force: true });
+    } catch {
+      try {
+        return await guild.members.fetch(id);
+      } catch {
+        return null;
+      }
+    }
   }
+
+  // 2) username#1234 / username / displayName
+  const normalized = raw.toLowerCase();
+
+  // تحديث الكاش قدر الإمكان
+  try {
+    await guild.members.fetch();
+  } catch {}
+
+  const byTag = guild.members.cache.find(
+    m => (m.user.tag || `${m.user.username}#${m.user.discriminator || '0000'}`).toLowerCase() === normalized
+  );
+  if (byTag) return byTag;
+
+  const byUsername = guild.members.cache.find(
+    m => (m.user.username || '').toLowerCase() === normalized
+  );
+  if (byUsername) return byUsername;
+
+  const byDisplayName = guild.members.cache.find(
+    m => (m.displayName || '').toLowerCase() === normalized
+  );
+  if (byDisplayName) return byDisplayName;
+
+  return null;
 };
 
 function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
@@ -1107,7 +1142,7 @@ module.exports = {
             dateStyle: 'medium',
             timeStyle: 'short'
           })}`,
-        iconURL: message.author.displayAvatarURL({ dynamic: true })
+          iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
       await sendNoPing(message.channel, { embeds: [embed] });
