@@ -1,3 +1,4 @@
+// models/TicketClaim.js
 const mongoose = require('mongoose');
 
 const ticketClaimSchema = new mongoose.Schema({
@@ -7,6 +8,7 @@ const ticketClaimSchema = new mongoose.Schema({
   claimedAt: { type: Date, default: Date.now }
 });
 
-ticketClaimSchema.index({ guildId: 1, channelId: 1 });
+ticketClaimSchema.index({ channelId: 1 }, { unique: true });
+ticketClaimSchema.index({ guildId: 1, claimedById: 1 });
 
 module.exports = mongoose.model('TicketClaim', ticketClaimSchema);
