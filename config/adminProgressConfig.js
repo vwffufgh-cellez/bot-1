@@ -1,3 +1,4 @@
+// config/adminProgressConfig.js
 module.exports = {
   PROMOTION_LOG_CHANNEL_ID: '1463932026595053641',
 
@@ -12,10 +13,11 @@ module.exports = {
     { level: 8, roleId: '1445473101629493383', name: 'إداري 8', req: { tickets: 50, warns: 50, xp: 11000 } }
   ],
 
+  // تعديل المضاعفات: 60%, 80%, 110%
   ADMIN_WARN_TIERS: [
     { roleId: '1445473102359167187', multiplier: 1.6, label: 'تحذير إداري أول' },
-    { roleId: '1445473102359167187', multiplier: 1.8, label: 'تحذير إداري ثاني' },
-    { roleId: '1445473102359167187', multiplier: 2.1, label: 'تحذير إداري ثالث' }
+    { roleId: '1445473102359167188', multiplier: 1.8, label: 'تحذير إداري ثاني' },
+    { roleId: '1445473102359167189', multiplier: 2.1, label: 'تحذير إداري ثالث' }
   ],
 
   POINT_VALUE: {
@@ -27,13 +29,14 @@ module.exports = {
   ALIASES: {
     TASKS: ['المهام', 'مهام'],
     STATS: ['ستات', 'stats'],
-    CONVERT: ['تحويل', 'convert'],
-    SWAP: ['تبديل', 'swap']
+    CONVERT: ['تبديل', 'بدل', 'exchange', 'swap'],
+    TRANSFER: ['تحويل', 'حول', 'transfer', 'send']
   },
 
-  POINT_ALIASES: {
-    tickets: ['تكت', 'تداكر', 'تذاكر', 'تكتات', 'ticket', 'tickets'],
-    warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns'],
-    xp: ['اكسبي', 'خبرة', 'xp', 'XP']
+  // اختصارات أنواع النقاط
+  POINT_TYPE_ALIASES: {
+    tickets: ['تكت', 'تذاكر', 'تكتات', 'تذكرة', 'ticket', 'tickets'],
+    warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'warn', 'warns', 'warning'],
+    xp: ['اكسبي', 'xp', 'خبرة', 'خبره', 'exp', 'experience']
   }
 };
