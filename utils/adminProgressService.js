@@ -5,31 +5,17 @@ const {
   ADMIN_WARN_TIERS,
   POINT_VALUE,
   PROMOTION_LOG_CHANNEL_ID,
-  TRANSFER_ALIASES
+  POINT_TYPE_ALIASES
 } = require('../config/adminProgressConfig');
 const { redPanel } = require('./panel');
 
-const DOC_KEY_MAP = {
-  tickets: 'tickets',
-  ticket: 'tickets',
-  تكت: 'tickets',
-  تداكر: 'tickets',
-  تذاكر: 'tickets',
-  تكتات: 'tickets',
-  ت: 'tickets',
-  warns: 'warns',
-  warn: 'warns',
-  تحذير: 'warns',
-  تحذيرات: 'warns',
-  تحدير: 'warns',
-  تحديرات: 'warns',
-  و: 'warns',
-  xp: 'xp',
-  خبرة: 'xp',
-  اكسبي: 'xp',
-  اكس: 'xp',
-  x: 'xp'
-};
+// بناء خريطة الاختصارات ديناميكياً
+const DOC_KEY_MAP = {};
+for (const [docKey, aliases] of Object.entries(POINT_TYPE_ALIASES)) {
+  for (const alias of aliases) {
+    DOC_KEY_MAP[alias.toLowerCase()] = docKey;
+  }
+}
 
 const DOC_TO_BASE = {
   tickets: 'ticket',
@@ -38,21 +24,8 @@ const DOC_TO_BASE = {
 };
 
 function normalizePointKey(input) {
-  const key = (input ?? '').toString().toLowerCase();
+  const key = (input ?? '').toString().toLowerCase().trim();
   return DOC_KEY_MAP[key] || null;
-}
-
-// دالة للتحقق من اختصارات النوع
-function getTypeFromAlias(alias) {
-  if (!alias) return null;
-  const lowerAlias = alias.toLowerCase();
-  
-  for (const [type, aliases] of Object.entries(TRANSFER_ALIASES)) {
-    if (aliases.some(a => a.toLowerCase() === lowerAlias)) {
-      return type;
-    }
-  }
-  return null;
 }
 
 function toBaseFromDocKey(docKey, amount) {
@@ -145,6 +118,7 @@ async function addPoints({ guildId, userId, tickets = 0, warns = 0, xp = 0 }) {
   return doc;
 }
 
+// تبديل النقاط بين الأنواع (للمستخدم نفسه)
 async function convertPoints(doc, fromTypeRaw, amount, toTypeRaw) {
   ensurePointBuckets(doc);
 
@@ -152,14 +126,14 @@ async function convertPoints(doc, fromTypeRaw, amount, toTypeRaw) {
   const toKey = normalizePointKey(toTypeRaw);
 
   if (!fromKey || !toKey) throw new Error('نوع النقاط غير معروف.');
-  if (fromKey === toKey) throw new Error('لا يمكن التحويل لنفس النوع.');
+  if (fromKey === toKey) throw new Error('لا يمكن التبديل لنفس النوع.');
   if (amount <= 0) throw new Error('الكمية لازم تكون أكبر من 0.');
   if (doc.points[fromKey] < amount) throw new Error('نقاطك غير كافية.');
 
   const base = toBaseFromDocKey(fromKey, amount);
   const out = fromBaseToDocKey(toKey, base);
 
-  if (out <= 0) throw new Error('ناتج التحويل أقل من 1.');
+  if (out <= 0) throw new Error('ناتج التبديل أقل من 1.');
 
   doc.points[fromKey] -= amount;
   doc.points[toKey] += out;
@@ -173,6 +147,7 @@ async function convertPoints(doc, fromTypeRaw, amount, toTypeRaw) {
   };
 }
 
+// تحويل النقاط لشخص آخر
 async function transferPoints(fromDoc, toDoc, typeRaw, amount) {
   ensurePointBuckets(fromDoc);
   ensurePointBuckets(toDoc);
@@ -186,6 +161,8 @@ async function transferPoints(fromDoc, toDoc, typeRaw, amount) {
   toDoc.points[docKey] += amount;
 
   await Promise.all([fromDoc.save(), toDoc.save()]);
+
+  return { docKey, amount };
 }
 
 async function tryPromote(message, member) {
@@ -208,7 +185,7 @@ async function tryPromote(message, member) {
 
     if (!ok) break;
 
-    // خصم المتطلبات فقط والاحتفاظ بالفائض
+    // خصم النقاط المطلوبة فقط (الزائد يبقى للمرحلة التالية)
     doc.points.tickets -= req.tickets;
     doc.points.warns -= req.warns;
     doc.points.xp -= req.xp;
@@ -261,5 +238,5 @@ module.exports = {
   getNextLevelConfig,
   scaledReq,
   normalizePointKey,
-  getTypeFromAlias
+  ensurePointBuckets
 };
