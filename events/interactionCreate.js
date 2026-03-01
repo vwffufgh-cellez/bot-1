@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const TicketClaim = require('../models/TicketClaim');
-const AdminStats = require('../models/AdminStats');
+const { addPoints, tryPromote } = require('../utils/adminProgressService'); // إضافة استيراد للترقيات
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 
@@ -39,32 +39,17 @@ module.exports = {
         });
       }
 
-      // هنا التعديل المهم 👇
-      // تغيير adminId إلى claimedById ليتطابق مع الموديل الجديد
+      // إنشاء سجل الاستلام
       await TicketClaim.create({
         guildId: interaction.guild.id,
         channelId: interaction.channel.id,
-        claimedById: interaction.user.id
-        // إذا في عندك حقل claimedAt في الموديل يمديك تضيف:
-        // claimedAt: new Date()
+        claimedById: interaction.user.id,
+        claimedAt: new Date()
       });
 
-      // إحصائيات الأدمن
-      let stats = await AdminStats.findOne({
-        guildId: interaction.guild.id,
-        adminId: interaction.user.id   // هذا ابقه كما هو إذا الموديل ما تغيّر
-      });
-
-      if (!stats) {
-        stats = new AdminStats({
-          guildId: interaction.guild.id,
-          adminId: interaction.user.id
-        });
-      }
-
-      stats.ticketsClaimed += 1;
-      stats.xp += 5;
-      await stats.save();
+      // إضافة نقاط التذاكر ومحاولة الترقية (الإصلاح الرئيسي)
+      await addPoints({ guildId: interaction.guild.id, userId: interaction.user.id, tickets: 1 });
+      await tryPromote(interaction, interaction.member); // للتحقق من الترقية
 
       // رد مخفي لصاحب الزر
       await interaction.reply({
