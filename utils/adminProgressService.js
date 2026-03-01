@@ -4,8 +4,7 @@ const AdminProgress = require('../models/AdminProgress');
 const {
   LEVEL_CONFIGS,
   POINT_TYPE_ALIASES,
-  SUPPORT_ROLE_ID,
-  PROMOTION_ANNOUNCE_CHANNEL_ID
+  WARNING_ROLE_IDS = []
 } = require('../config/adminProgressConfig');
 
 // دالة للحصول على أو إنشاء سجل الإداري
@@ -46,6 +45,11 @@ function getMultiplier(member) {
 function getNextLevelConfig(currentLevel) {
   if (!Array.isArray(LEVEL_CONFIGS)) return null;
   return LEVEL_CONFIGS.find(cfg => cfg.level === currentLevel + 1) || null;
+}
+
+function getLevelConfig(level) {
+  if (!Array.isArray(LEVEL_CONFIGS)) return null;
+  return LEVEL_CONFIGS.find(cfg => cfg.level === level) || null;
 }
 
 function scaledReq(req, multiplier) {
@@ -117,32 +121,60 @@ async function transferPoints(fromDoc, toDoc, typeArg, amount) {
   return { docKey: key, amount: amt };
 }
 
-function roleNames(guild, roleIds = []) {
+function roleMentions(roleIds = []) {
   if (!Array.isArray(roleIds) || !roleIds.length) return 'لا يوجد';
-  return roleIds
-    .map(id => guild.roles.cache.get(id)?.name || id)
-    .join('، ');
+  return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-// ✅ ترقية مع خصم المطلوب + ترحيل الزيادة + منشن خارج البنل
-async function tryPromote(interactionOrMessage, member) {
-  if (!member?.guild) return;
+async function syncRolesByLevel(guild, member, fromRoles = [], toRoles = [], removeExtra = []) {
+  const toRemove = [...new Set([...(fromRoles || []), ...(removeExtra || [])])];
+  const toAdd = [...new Set(toRoles || [])];
+
+  const removed = [];
+  const added = [];
+
+  for (const roleId of toRemove) {
+    try {
+      if (member.roles.cache.has(roleId)) {
+        await member.roles.remove(roleId);
+        removed.push(roleId);
+      }
+    } catch (err) {
+      console.error('Error removing role:', err);
+    }
+  }
+
+  for (const roleId of toAdd) {
+    try {
+      if (!member.roles.cache.has(roleId)) {
+        await member.roles.add(roleId);
+        added.push(roleId);
+      }
+    } catch (err) {
+      console.error('Error adding role:', err);
+    }
+  }
+
+  return { removed, added };
+}
+
+// ترقية: DM فقط افتراضيًا + منشن داخل البنل + حذف "المتبقي بعد الترحيل"
+async function tryPromote(interactionOrMessage, member, options = {}) {
+  if (!member?.guild) return { promoted: false };
+
+  const announceInChannel = options.announceInChannel ?? false;
+  const dmOnPromote = options.dmOnPromote ?? true;
 
   const guild = member.guild;
   const doc = await getOrCreate(guild.id, member.id);
   const multiplier = getMultiplier(member);
 
-  const startingLevel = doc.level;
+  const startingLevel = doc.level || 0;
   let promotedCount = 0;
   const consumed = { tickets: 0, warns: 0, xp: 0 };
 
-  // نجيب أول رتبة قديمة قبل أول ترقية
-  const startingCfg =
-    doc.level > 0
-      ? LEVEL_CONFIGS.find(cfg => cfg.level === doc.level) || { roles: [] }
-      : { roles: [] };
+  const startingCfg = getLevelConfig(startingLevel) || { level: startingLevel, name: `Level ${startingLevel}`, roles: [] };
 
-  // حلقة ترقيات متعددة عند وجود فائض
   while (true) {
     const nextCfg = getNextLevelConfig(doc.level);
     if (!nextCfg) break;
@@ -157,7 +189,6 @@ async function tryPromote(interactionOrMessage, member) {
 
     if (!canPromote) break;
 
-    // خصم المطلوب للمستوى الحالي (والفائض يبقى)
     doc.points.tickets = (doc.points.tickets || 0) - (nextReq.tickets || 0);
     doc.points.warns = (doc.points.warns || 0) - (nextReq.warns || 0);
     doc.points.xp = (doc.points.xp || 0) - (nextReq.xp || 0);
@@ -171,92 +202,106 @@ async function tryPromote(interactionOrMessage, member) {
     promotedCount += 1;
   }
 
-  if (!promotedCount) return;
+  if (!promotedCount) return { promoted: false };
 
   await doc.save();
 
-  const finalCfg = LEVEL_CONFIGS.find(cfg => cfg.level === doc.level) || { roles: [] };
+  const finalCfg = getLevelConfig(doc.level) || { level: doc.level, name: `Level ${doc.level}`, roles: [] };
   const oldRoles = Array.isArray(startingCfg.roles) ? startingCfg.roles : [];
   const newRoles = Array.isArray(finalCfg.roles) ? finalCfg.roles : [];
 
-  const WARNING_ROLE_IDS = [];
-  const rolesToRemove = [...new Set([...oldRoles, ...WARNING_ROLE_IDS])];
+  const warningRoles = Array.isArray(WARNING_ROLE_IDS) ? WARNING_ROLE_IDS : [];
+  const syncResult = await syncRolesByLevel(guild, member, oldRoles, newRoles, warningRoles);
 
-  for (const roleId of rolesToRemove) {
+  const removedWarningRoles = (syncResult.removed || []).filter(id => warningRoles.includes(id));
+
+  const embed = new EmbedBuilder()
+    .setColor(0xff0000)
+    .setTitle('🚀 ترقية إداري')
+    .setDescription(
+      [
+        `**تهانينا <@${member.id}>!**`,
+        `تمت ترقيتك بنجاح.`,
+        '',
+        `**من مستوى:** ${startingCfg.name || `Level ${startingLevel}`}`,
+        `**إلى مستوى:** ${finalCfg.name || `Level ${doc.level}`}`,
+        '',
+        `**الرتب السابقة:** ${roleMentions(oldRoles)}`,
+        `**الرتب الجديدة:** ${roleMentions(newRoles)}`,
+        `**رتب التحذيرات المحذوفة:** ${roleMentions(removedWarningRoles)}`,
+        '',
+        `**المطلوب المخصوم خلال الترقية:**`,
+        `🎟️ تذاكر: ${consumed.tickets}`,
+        `⚠️ تحذيرات: ${consumed.warns}`,
+        `✨ XP: ${consumed.xp}`
+      ].join('\n')
+    )
+    .setFooter({
+      text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
+      iconURL: member.displayAvatarURL({ size: 128 })
+    });
+
+  if (dmOnPromote) {
     try {
-      if (member.roles.cache.has(roleId)) {
-        await member.roles.remove(roleId);
+      await member.send({ embeds: [embed] });
+    } catch {}
+  }
+
+  if (announceInChannel) {
+    try {
+      const channel = interactionOrMessage?.channel;
+      if (channel) {
+        await channel.send({
+          allowedMentions: { parse: [] },
+          embeds: [embed]
+        });
       }
-    } catch (err) {
-      console.error('Error removing role in promotion:', err);
-    }
+    } catch {}
   }
 
-  for (const roleId of newRoles) {
-    try {
-      if (!member.roles.cache.has(roleId)) {
-        await member.roles.add(roleId);
-      }
-    } catch (err) {
-      console.error('Error adding role in promotion:', err);
-    }
+  return {
+    promoted: true,
+    fromLevel: startingLevel,
+    toLevel: doc.level,
+    fromName: startingCfg.name || `Level ${startingLevel}`,
+    toName: finalCfg.name || `Level ${doc.level}`,
+    removedWarningRoles
+  };
+}
+
+// كسر رتبة واحدة
+async function demoteOneLevel(guild, member) {
+  const doc = await getOrCreate(guild.id, member.id);
+  if (!doc || (doc.level ?? 0) <= 0) {
+    throw new Error('هذا العضو في أقل مستوى بالفعل.');
   }
 
-  const announceChannel = guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
-  if (announceChannel) {
-    const embed = new EmbedBuilder()
-      .setColor(0xff0000)
-      .setTitle('🚀 ترقية إداري')
-      .setDescription(
-        [
-          `**تمت ترقية:** <@${member.id}>`,
-          `**من مستوى:** ${startingLevel}`,
-          `**إلى مستوى:** ${doc.level}`,
-          `**المستوى الحالي:** ${finalCfg.name || `Level ${doc.level}`}`,
-          '',
-          `**الرتبة السابقة:** ${roleNames(guild, oldRoles)}`,
-          `**الرتبة الجديدة:** ${roleNames(guild, newRoles)}`,
-          '',
-          `**المطلوب المخصوم خلال الترقية:**`,
-          `🎟️ تذاكر: ${consumed.tickets}`,
-          `⚠️ تحذيرات: ${consumed.warns}`,
-          `✨ XP: ${consumed.xp}`,
-          '',
-          `**المتبقي بعد الترحيل:**`,
-          `🎟️ ${doc.points.tickets} | ⚠️ ${doc.points.warns} | ✨ ${doc.points.xp}`
-        ].join('\n')
-      )
-      .setFooter({
-        text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
-        iconURL: member.displayAvatarURL({ size: 128 })
-      });
+  const fromLevel = doc.level;
+  const toLevel = fromLevel - 1;
 
-    try {
-      await announceChannel.send({
-        content: `<@&${SUPPORT_ROLE_ID}>`, // ✅ المنشن برا البنل
-        allowedMentions: { roles: [SUPPORT_ROLE_ID] },
-        embeds: [embed]
-      });
-    } catch (err) {
-      console.error('Error sending promotion announcement:', err);
-    }
-  }
+  const fromCfg = getLevelConfig(fromLevel) || { level: fromLevel, name: `Level ${fromLevel}`, roles: [] };
+  const toCfg = getLevelConfig(toLevel) || { level: toLevel, name: `Level ${toLevel}`, roles: [] };
 
-  // إشعار بسيط للشخص (بدون كسر لو الرد مستخدم)
-  try {
-    if (interactionOrMessage && typeof interactionOrMessage.reply === 'function') {
-      await interactionOrMessage.reply({
-        content: `🎉 تم ترقيتك إلى **${finalCfg.name || `Level ${doc.level}`}**`,
-        allowedMentions: { repliedUser: true }
-      });
-    }
-  } catch {}
+  doc.level = toLevel;
+  await doc.save();
+
+  const oldRoles = Array.isArray(fromCfg.roles) ? fromCfg.roles : [];
+  const newRoles = Array.isArray(toCfg.roles) ? toCfg.roles : [];
+  await syncRolesByLevel(guild, member, oldRoles, newRoles, []);
+
+  return {
+    fromLevel,
+    toLevel,
+    fromName: fromCfg.name || `Level ${fromLevel}`,
+    toName: toCfg.name || `Level ${toLevel}`
+  };
 }
 
 module.exports = {
   getOrCreate,
   addPoints,
   tryPromote,
+  demoteOneLevel,
   getMultiplier,
   getNextLevelConfig,
   scaledReq,
