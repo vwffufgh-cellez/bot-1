@@ -1,100 +1,75 @@
-// utils/adminProgressService.js
+const { EmbedBuilder } = require('discord.js');
 const AdminProgress = require('../models/AdminProgress');
-const {
-  ADMIN_LEVELS,
-  ADMIN_WARN_TIERS,
-  POINT_VALUE,
-  PROMOTION_LOG_CHANNEL_ID,
-  POINT_TYPE_ALIASES
-} = require('../config/adminProgressConfig');
-const { redPanel } = require('./panel');
+const { LEVEL_CONFIGS, POINT_TYPE_ALIASES } = require('../config/adminProgressConfig');
 
-// بناء خريطة الاختصارات ديناميكياً
-const DOC_KEY_MAP = {};
-for (const [docKey, aliases] of Object.entries(POINT_TYPE_ALIASES)) {
-  for (const alias of aliases) {
-    DOC_KEY_MAP[alias.toLowerCase()] = docKey;
+// دالة للحصول على أو إنشاء سجل الإداري
+async function getOrCreate(guildId, adminId) {
+  let doc = await AdminProgress.findOne({ guildId, adminId });
+  if (!doc) {
+    doc = new AdminProgress({ guildId, adminId });
+    await doc.save();
   }
-}
-
-const DOC_TO_BASE = {
-  tickets: 'ticket',
-  warns: 'warn',
-  xp: 'xp'
-};
-
-function normalizePointKey(input) {
-  const key = (input ?? '').toString().toLowerCase().trim();
-  return DOC_KEY_MAP[key] || null;
-}
-
-function toBaseFromDocKey(docKey, amount) {
-  const baseKey = DOC_TO_BASE[docKey];
-  if (!baseKey || POINT_VALUE[baseKey] == null) {
-    throw new Error('نوع النقاط غير مدعوم.');
-  }
-  return amount * POINT_VALUE[baseKey];
-}
-
-function fromBaseToDocKey(docKey, baseAmount) {
-  const baseKey = DOC_TO_BASE[docKey];
-  if (!baseKey || POINT_VALUE[baseKey] == null) {
-    throw new Error('نوع النقاط غير مدعوم.');
-  }
-  return Math.floor(baseAmount / POINT_VALUE[baseKey]);
-}
-
-function ensurePointBuckets(doc) {
-  let dirty = false;
-
-  if (!doc.points) {
-    doc.points = { tickets: 0, warns: 0, xp: 0 };
-    dirty = true;
-  } else {
-    for (const key of ['tickets', 'warns', 'xp']) {
-      if (typeof doc.points[key] !== 'number') {
-        doc.points[key] = 0;
-        dirty = true;
-      }
-    }
-  }
-
-  if (!doc.lifetime) {
-    doc.lifetime = { tickets: 0, warns: 0, xp: 0 };
-    dirty = true;
-  } else {
-    for (const key of ['tickets', 'warns', 'xp']) {
-      if (typeof doc.lifetime[key] !== 'number') {
-        doc.lifetime[key] = 0;
-        dirty = true;
-      }
-    }
-  }
-
-  return dirty;
-}
-
-async function getOrCreate(guildId, userId) {
-  let doc = await AdminProgress.findOne({ guildId, userId });
-  if (!doc) doc = await AdminProgress.create({ guildId, userId });
-  if (ensurePointBuckets(doc)) await doc.save();
   return doc;
 }
 
-function getMultiplier(member) {
-  let m = 1;
-  for (const tier of ADMIN_WARN_TIERS) {
-    if (member.roles.cache.has(tier.roleId)) {
-      m = Math.max(m, tier.multiplier);
-    }
+// إضافة نقاط (جمع)
+async function addPoints({ guildId, userId, xp = 0, tickets = 0, warnings = 0 }) {
+  const doc = await getOrCreate(guildId, userId);
+
+  if (xp > 0) {
+    doc.points.xp += xp;
+    doc.lifetime.xp += xp;
   }
-  return m;
+  if (tickets > 0) {
+    doc.points.tickets += tickets;
+    doc.lifetime.tickets += tickets;
+  }
+  if (warnings > 0) {
+    doc.points.warns += warnings;
+    doc.lifetime.warns += warnings;
+  }
+
+  await doc.save();
+  return doc;
 }
 
-function getNextLevelConfig(level) {
-  return ADMIN_LEVELS.find(l => l.level === level + 1) || null;
+// تعيين نقاط مباشرة (استبدال - لأمر التعديل)
+async function setPoints({ guildId, userId, tickets = null, warns = null, xp = null }) {
+  const doc = await getOrCreate(guildId, userId);
+
+  if (tickets !== null) {
+    doc.points.tickets = tickets;
+  }
+  if (warns !== null) {
+    doc.points.warns = warns;
+  }
+  if (xp !== null) {
+    doc.points.xp = xp;
+  }
+
+  await doc.save();
+  return doc;
 }
 
+// الحصول على المضاعف
+function getMultiplier(member) {
+  return 1.0;
+}
+
+// الحصول على config المستوى التالي
+function getNextLevelConfig(currentLevel) {
+  const configs = LEVEL_CONFIGS || [];
+  return configs.find(cfg => cfg.level === currentLevel + 1) || null;
+}
+
+// الحصول على config المستوى الحالي
+function getCurrentLevelConfig(currentLevel) {
+  const configs = LEVEL_CONFIGS || [];
+  if (currentLevel === 0) return { level: 0, name: 'بدون رتبة', roles: [] };
+  return configs.find(cfg => cfg.level === currentLevel) || { level: currentLevel, name: `Level ${currentLevel}`, roles: [] };
+}
+
+// حساب المتطلبات المعدّلة بالمضاعف
 function scaledReq(req, multiplier) {
   return {
     tickets: Math.ceil(req.tickets * multiplier),
@@ -103,140 +78,166 @@ function scaledReq(req, multiplier) {
   };
 }
 
-async function addPoints({ guildId, userId, tickets = 0, warns = 0, xp = 0 }) {
-  const doc = await getOrCreate(guildId, userId);
-
-  doc.points.tickets += tickets;
-  doc.points.warns += warns;
-  doc.points.xp += xp;
-
-  doc.lifetime.tickets += tickets;
-  doc.lifetime.warns += warns;
-  doc.lifetime.xp += xp;
-
-  await doc.save();
-  return doc;
+// تطبيع اسم نوع النقاط
+function normalizePointKey(key) {
+  const lower = key.toLowerCase();
+  for (const [type, aliases] of Object.entries(POINT_TYPE_ALIASES || {})) {
+    if (aliases.includes(lower)) return type;
+  }
+  return null;
 }
 
-// تبديل النقاط بين الأنواع (للمستخدم نفسه)
-async function convertPoints(doc, fromTypeRaw, amount, toTypeRaw) {
-  ensurePointBuckets(doc);
+// تبديل النقاط
+async function convertPoints(doc, fromType, amount, toType) {
+  const fromKey = normalizePointKey(fromType);
+  const toKey = normalizePointKey(toType);
+  if (!fromKey || !toKey || fromKey === toKey) throw new Error('أنواع غير صالحة أو متطابقة.');
 
-  const fromKey = normalizePointKey(fromTypeRaw);
-  const toKey = normalizePointKey(toTypeRaw);
+  if (doc.points[fromKey] < amount) throw new Error('لا تملك نقاط كافية للتبديل.');
 
-  if (!fromKey || !toKey) throw new Error('نوع النقاط غير معروف.');
-  if (fromKey === toKey) throw new Error('لا يمكن التبديل لنفس النوع.');
-  if (amount <= 0) throw new Error('الكمية لازم تكون أكبر من 0.');
-  if (doc.points[fromKey] < amount) throw new Error('نقاطك غير كافية.');
-
-  const base = toBaseFromDocKey(fromKey, amount);
-  const out = fromBaseToDocKey(toKey, base);
-
-  if (out <= 0) throw new Error('ناتج التبديل أقل من 1.');
-
+  const amountOut = amount;
   doc.points[fromKey] -= amount;
-  doc.points[toKey] += out;
+  doc.points[toKey] += amountOut;
   await doc.save();
 
-  return {
-    amountOut: out,
-    amountIn: amount,
-    fromKey,
-    toKey
-  };
+  return { fromKey, toKey, amountIn: amount, amountOut };
 }
 
-// تحويل النقاط لشخص آخر
-async function transferPoints(fromDoc, toDoc, typeRaw, amount) {
-  ensurePointBuckets(fromDoc);
-  ensurePointBuckets(toDoc);
+// تحويل نقاط بين مستخدمين
+async function transferPoints(fromDoc, toDoc, typeArg, amount) {
+  const key = normalizePointKey(typeArg);
+  if (!key) throw new Error('نوع غير صالح.');
 
-  const docKey = normalizePointKey(typeRaw);
-  if (!docKey) throw new Error('نوع النقاط غير معروف.');
-  if (amount <= 0) throw new Error('الكمية لازم تكون أكبر من 0.');
-  if (fromDoc.points[docKey] < amount) throw new Error('نقاطك غير كافية.');
+  if (fromDoc.points[key] < amount) throw new Error('لا تملك نقاط كافية للتحويل.');
 
-  fromDoc.points[docKey] -= amount;
-  toDoc.points[docKey] += amount;
+  fromDoc.points[key] -= amount;
+  toDoc.points[key] += amount;
+  await fromDoc.save();
+  await toDoc.save();
 
-  await Promise.all([fromDoc.save(), toDoc.save()]);
-
-  return { docKey, amount };
+  return { docKey: key, amount };
 }
 
-async function tryPromote(message, member) {
-  const doc = await getOrCreate(message.guild.id, member.id);
+// === محاولة الترقية (مُصلحة تماماً) ===
+async function tryPromote(interactionOrMessage, member) {
+  if (!member) return;
 
-  let promoted = false;
+  const guildId = member.guild.id;
+  const adminId = member.id;
+  const doc = await getOrCreate(guildId, adminId);
+  
+  const multiplier = getMultiplier(member);
+  const nextCfg = getNextLevelConfig(doc.level);
+  if (!nextCfg) return;
+
+  const nextReq = scaledReq(nextCfg.req, multiplier);
+  
+  // === التصحيح: >= بدل === ===
+  const canPromote = 
+    doc.points.tickets >= nextReq.tickets &&
+    doc.points.warns >= nextReq.warns &&
+    doc.points.xp >= nextReq.xp;
+
+  if (!canPromote) return;
+
+  // جلب الرتب القديمة
+  const currentCfg = getCurrentLevelConfig(doc.level);
+  const oldRoles = currentCfg.roles || [];
+
+  // الترقية
   const oldLevel = doc.level;
-
-  while (true) {
-    const nextCfg = getNextLevelConfig(doc.level);
-    if (!nextCfg) break;
-
-    const mult = getMultiplier(member);
-    const req = scaledReq(nextCfg.req, mult);
-
-    const ok =
-      doc.points.tickets >= req.tickets &&
-      doc.points.warns >= req.warns &&
-      doc.points.xp >= req.xp;
-
-    if (!ok) break;
-
-    // خصم النقاط المطلوبة فقط (الزائد يبقى للمرحلة التالية)
-    doc.points.tickets -= req.tickets;
-    doc.points.warns -= req.warns;
-    doc.points.xp -= req.xp;
-
-    doc.level = nextCfg.level;
-    doc.promotedAt = new Date();
-    promoted = true;
-  }
-
-  if (!promoted) return null;
+  doc.level = oldLevel + 1;
+  doc.promotedAt = new Date();
   await doc.save();
 
-  const warnTierRoleIds = ADMIN_WARN_TIERS.map(t => t.roleId).filter(Boolean);
-  const toRemove = warnTierRoleIds.filter(id => member.roles.cache.has(id));
-  if (toRemove.length) {
-    await member.roles.remove(toRemove).catch(() => {});
+  // إزالة الرتب القديمة
+  for (const roleId of oldRoles) {
+    try {
+      if (member.roles.cache.has(roleId)) {
+        await member.roles.remove(roleId);
+      }
+    } catch (err) {
+      console.error('Error removing role:', err);
+    }
   }
 
-  const newCfg = ADMIN_LEVELS.find(x => x.level === doc.level);
-  if (newCfg?.roleId && !member.roles.cache.has(newCfg.roleId)) {
-    await member.roles.add(newCfg.roleId).catch(() => {});
+  // إضافة الرتب الجديدة
+  const newRoles = nextCfg.roles || [];
+  for (const roleId of newRoles) {
+    try {
+      if (!member.roles.cache.has(roleId)) {
+        await member.roles.add(roleId);
+      }
+    } catch (err) {
+      console.error('Error adding role:', err);
+    }
   }
 
-  const logChannel = message.guild.channels.cache.get(PROMOTION_LOG_CHANNEL_ID);
-  if (logChannel) {
-    await logChannel
-      .send({
-        embeds: [
-          redPanel(
-            `الاداري : <@${member.id}>\n` +
-              `الترقية : **${newCfg?.name || `Level ${doc.level}`}**\n` +
-              `الرتبة يلي قبل : **${oldLevel === 0 ? 'لا يوجد' : `Level ${oldLevel}`}**`
-          )
-        ],
-        allowedMentions: { parse: [] }
-      })
-      .catch(() => {});
-  }
+  // حساب الرتب المشالة
+  const removedRoles = oldRoles.filter(roleId => !newRoles.includes(roleId));
+  const removedNames = removedRoles.length > 0 
+    ? removedRoles.map(id => `<@&${id}>`).join(' ')
+    : '**لا يوجد**';
 
-  return { oldLevel, newLevel: doc.level };
+  // === إرسال الإشعار ===
+  const announcementChannelId = '1463932101496799252';
+  const announcementChannel = member.guild.channels.cache.get(announcementChannelId);
+  
+  if (announcementChannel) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle('**تمت ترقية الإداري**')
+      .setDescription('**<@&1445473101629493383>**')
+      .addFields(
+        {
+          name: '**الإداري المرقى**',
+          value: `**<@${adminId}>**`,
+          inline: false
+        },
+        {
+          name: '**الرتب التي أُعطيت له**',
+          value: newRoles.length > 0 
+            ? newRoles.map(id => `<@&${id}>`).join(' ')
+            : '**لا يوجد**',
+          inline: false
+        },
+        {
+          name: '**الرتب التي كان يملكها**',
+          value: oldRoles.length > 0 
+            ? oldRoles.map(id => `<@&${id}>`).join(' ')
+            : '**لا يوجد**',
+          inline: false
+        },
+        {
+          name: '**الرتب التي أُزيلت**',
+          value: removedNames,
+          inline: false
+        }
+      )
+      .setImage('https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a528b2&is=69a3d732&hm=1afa0cca211ad776f4f300106b39daa4f94427cc3c093f352a14f725d26c35bf')
+      .setFooter({
+        text: `${member.user.tag} ← ${nextCfg.name || `Level ${doc.level}`}`,
+        iconURL: member.displayAvatarURL({ size: 128 })
+      });
+
+    try {
+      await announcementChannel.send({ embeds: [embed] });
+    } catch (err) {
+      console.error('Error sending promotion announcement:', err);
+    }
+  }
 }
 
 module.exports = {
   getOrCreate,
   addPoints,
+  setPoints,
   tryPromote,
-  convertPoints,
-  transferPoints,
   getMultiplier,
   getNextLevelConfig,
+  getCurrentLevelConfig,
   scaledReq,
   normalizePointKey,
-  ensurePointBuckets
+  convertPoints,
+  transferPoints
 };
