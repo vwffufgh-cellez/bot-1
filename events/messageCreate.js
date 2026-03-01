@@ -129,6 +129,9 @@ const greenPanel = (text, title = null) => {
 const redConfirmPanel = text =>
   new EmbedBuilder().setColor(0xff0000).setDescription(`**✅ ${text}**`);
 
+const formatRoleMentions = (roleIds = []) =>
+  Array.isArray(roleIds) && roleIds.length ? roleIds.map(id => `<@&${id}>`).join('، ') : 'لا يوجد';
+
 const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
   const modUser = moderator.user ?? moderator;
   return new EmbedBuilder()
@@ -155,10 +158,11 @@ const extractIdFromMention = arg => {
   return null;
 };
 
-// محسّن: يجلب العضو حتى لو أوفلاين (منشن/آيدي/username#1234/username/displayName)
+// fetchMember قوي جداً (أوفلاين + كاش + Query API)
 const fetchMember = async (guild, arg) => {
   if (!arg) return null;
   const raw = String(arg).trim();
+  if (!raw) return null;
 
   // mention / id
   const id = extractIdFromMention(raw);
@@ -174,27 +178,30 @@ const fetchMember = async (guild, arg) => {
     }
   }
 
-  // username#1234 / username / displayName
   const normalized = raw.toLowerCase();
 
   try {
     await guild.members.fetch();
   } catch {}
 
-  const byTag = guild.members.cache.find(
-    m => (m.user.tag || `${m.user.username}#${m.user.discriminator || '0000'}`).toLowerCase() === normalized
-  );
-  if (byTag) return byTag;
+  // exact: tag / username / displayName
+  let found =
+    guild.members.cache.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
+    guild.members.cache.find(m => (m.user.username || '').toLowerCase() === normalized) ||
+    guild.members.cache.find(m => (m.displayName || '').toLowerCase() === normalized);
 
-  const byUsername = guild.members.cache.find(
-    m => (m.user.username || '').toLowerCase() === normalized
-  );
-  if (byUsername) return byUsername;
+  if (found) return found;
 
-  const byDisplayName = guild.members.cache.find(
-    m => (m.displayName || '').toLowerCase() === normalized
-  );
-  if (byDisplayName) return byDisplayName;
+  // query search fallback
+  try {
+    const queried = await guild.members.fetch({ query: raw, limit: 50 });
+    found =
+      queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
+      queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
+      queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
+      queried.first();
+    if (found) return found;
+  } catch {}
 
   return null;
 };
@@ -231,7 +238,7 @@ async function addWarningAndNotify(message, member, reason) {
   await doc.save();
 
   await addPoints({ guildId: message.guild.id, userId: message.author.id, warns: 1 });
-  await tryPromote(message, message.member, { announceInChannel: false, dmOnPromote: true });
+  await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
 
   const detailEmbed = warnDetailEmbed({ target: member, moderator: message.member, reason, caseId });
 
@@ -301,6 +308,7 @@ const startOfMonth = value => {
 };
 
 function resetScopes(doc, now) {
+  let changed = false;
   const daily = startOfDay(now);
   const weekly = startOfWeek(now);
   const monthly = startOfMonth(now);
@@ -309,17 +317,22 @@ function resetScopes(doc, now) {
     doc.dailyTextXp = 0;
     doc.dailyVoiceXp = 0;
     doc.dailyResetAt = daily;
+    changed = true;
   }
   if (!doc.weeklyResetAt || doc.weeklyResetAt < weekly) {
     doc.weeklyTextXp = 0;
     doc.weeklyVoiceXp = 0;
     doc.weeklyResetAt = weekly;
+    changed = true;
   }
   if (!doc.monthlyResetAt || doc.monthlyResetAt < monthly) {
     doc.monthlyTextXp = 0;
     doc.monthlyVoiceXp = 0;
     doc.monthlyResetAt = monthly;
+    changed = true;
   }
+
+  return changed;
 }
 
 const randomBetween = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
@@ -338,7 +351,7 @@ async function grantTextXp(message) {
 
   if (message.member?.roles.cache.has(SUPPORT_ROLE_ID)) {
     await addPoints({ guildId: message.guild.id, userId: message.author.id, xp: xpAmount });
-    await tryPromote(message, message.member, { announceInChannel: false, dmOnPromote: true });
+    await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
   }
 
   let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: message.author.id });
@@ -384,10 +397,12 @@ async function grantTextXp(message) {
 function getTopScopeFromArg(arg) {
   const v = (arg || '').trim().toLowerCase();
   if (!v) return 'all';
+
   if (['day', 'daily', 'يومي', 'اليومي'].includes(v)) return 'day';
   if (['week', 'weekly', 'اسبوع', 'أسبوع', 'اسبوعي', 'أسبوعي'].includes(v)) return 'week';
   if (['month', 'monthly', 'شهري', 'الشهري'].includes(v)) return 'month';
   if (['all', 'global', 'server', 'عام', 'العام', 'سيرفر', 'كل'].includes(v)) return 'all';
+
   return null;
 }
 
@@ -504,6 +519,7 @@ module.exports = {
     if (isTasksCommand) {
       const guardKey = `${message.id}:tasks`;
       if (!markProcessed(guardKey)) return;
+
       if (!hasSupportRole) return;
 
       await sendNoPing(message.channel, { embeds: [redPanel('أمر المهام سيتم تفعيله لاحقاً.')] });
@@ -513,13 +529,14 @@ module.exports = {
     if (isStatsCommand) {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
+
       if (!hasSupportRole) return;
 
-      const targetArg = tokens.shift();
+      const targetRaw = tokens.join(' ').trim(); // يدعم أسماء فيها مسافات
       let member = message.member;
 
-      if (targetArg) {
-        const fetchedMember = await fetchMember(message.guild, targetArg);
+      if (targetRaw) {
+        const fetchedMember = await fetchMember(message.guild, targetRaw);
         if (!fetchedMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -532,8 +549,12 @@ module.exports = {
       }
 
       const doc = await getOrCreate(message.guild.id, member.id);
+
       const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
-      const totalUserXp = userXpDoc ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0) : 0;
+      const totalUserXp = userXpDoc
+        ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0)
+        : 0;
+
       const nextCfg = getNextLevelConfig(doc.level);
       const multiplier = getMultiplier(member);
       const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
@@ -542,27 +563,49 @@ module.exports = {
         .setColor(0xff0000)
         .setAuthor({
           name: `بطاقة الإداري - ${member.user.tag}`,
-          iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
+          iconURL:
+            member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
         })
         .addFields(
           {
-            name: '🔢 المستوى الحالي',
-            value: `**Level ${doc.level}**${doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''}`,
+            name: '👤 الإداري',
+            value: `**<@${member.id}>**`,
             inline: true
           },
-          { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+          {
+            name: '🔢 المستوى الحالي',
+            value: `**Level ${doc.level}**${
+              doc.promotedAt
+                ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>`
+                : ''
+            }`,
+            inline: true
+          },
+          {
+            name: '🎚️ المضاعف الحالي',
+            value: `**x${multiplier.toFixed(2)}**`,
+            inline: true
+          },
           {
             name: '🎟️ نقاطك الحالية',
             value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
             inline: false
           },
-          { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
+          {
+            name: '📊 إجمالي XP (نصي + صوتي)',
+            value: `**${totalUserXp} XP**`,
+            inline: false
+          },
           {
             name: '📦 إجمالي مساهماتك',
             value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
             inline: false
           }
-        );
+        )
+        .setFooter({
+          text: `بناءً على طلب ${message.author.tag}`,
+          iconURL: message.author.displayAvatarURL({ size: 128 })
+        });
 
       if (nextReq) {
         embed.addFields({
@@ -575,23 +618,30 @@ module.exports = {
           inline: false
         });
       } else {
-        embed.addFields({ name: '🚀 الترقية القادمة', value: '**أنت في أعلى مستوى متاح حالياً.**', inline: false });
+        embed.addFields({
+          name: '🚀 الترقية القادمة',
+          value: '**أنت في أعلى مستوى متاح حالياً.**',
+          inline: false
+        });
       }
 
       await sendNoPing(message.channel, { embeds: [embed] });
       return;
     }
 
-    // أمر كسر: يرجع رتبة واحدة للخلف (فقط OWNER_ID)
+    // أمر كسر مستوى واحد (إجباري سبب)
     if (isBreakCommand) {
       const guardKey = `${message.id}:break`;
       if (!markProcessed(guardKey)) return;
+
       if (message.author.id !== OWNER_ID) return;
 
       const targetArg = tokens.shift();
-      if (!targetArg) {
+      const reason = tokens.join(' ').trim();
+
+      if (!targetArg || !reason) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName>`')]
+          embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName> <السبب>`')]
         });
         return;
       }
@@ -608,9 +658,45 @@ module.exports = {
       }
 
       try {
-        const result = await demoteOneLevel(message.guild, targetMember);
+        const result = await demoteOneLevel(message.guild, targetMember, {
+          reason,
+          byId: message.author.id
+        });
+
+        // DM للشخص المتأثر
+        try {
+          const dmEmbed = new EmbedBuilder()
+            .setColor(0xff0000)
+            .setTitle('⬇️ إشعار كسر رتبة')
+            .setDescription(
+              [
+                `**مرحباً <@${targetMember.id}>**`,
+                `تم كسر رتبتك مستوى واحد.`,
+                ``,
+                `**من:** ${result.fromName}`,
+                `**إلى:** ${result.toName}`,
+                `**السبب:** ${reason}`,
+                `**بواسطة:** <@${message.author.id}>`,
+                `**الرتب التي أُزيلت:** ${formatRoleMentions(result.removedRoles)}`,
+                `**الرتب الجديدة:** ${formatRoleMentions(result.addedRoles)}`
+              ].join('\n')
+            );
+
+          await targetMember.send({ embeds: [dmEmbed] });
+        } catch {}
+
         await sendNoPing(message.channel, {
-          embeds: [redPanel(`تم كسر رتبة <@${targetMember.id}> بنجاح.\nمن: **${result.fromName}**\nإلى: **${result.toName}**`)]
+          embeds: [
+            redPanel(
+              [
+                `تم كسر رتبة <@${targetMember.id}> بنجاح.`,
+                `**السبب:** ${reason}`,
+                `**من:** ${result.fromName}`,
+                `**إلى:** ${result.toName}`,
+                `**الرتب المحذوفة:** ${formatRoleMentions(result.removedRoles)}`
+              ].join('\n')
+            )
+          ]
         });
       } catch (err) {
         await sendNoPing(message.channel, {
@@ -620,20 +706,37 @@ module.exports = {
       return;
     }
 
+    // أمر تبديل النقاط بين الأنواع
     if (isConvertCommand) {
       const guardKey = `${message.id}:convert`;
       if (!markProcessed(guardKey)) return;
+
       if (!hasSupportRole) return;
 
-      const [amountRaw, fromType, toType] = tokens;
+      let amountRaw, fromType, toType;
+
+      // يدعم:
+      // 1) تبديل 20 تكت xp
+      // 2) تبديل تكت 20 xp
+      if (tokens.length >= 3) {
+        if (Number.isFinite(Number(tokens[0]))) {
+          amountRaw = tokens[0];
+          fromType = tokens[1];
+          toType = tokens[2];
+        } else {
+          fromType = tokens[0];
+          amountRaw = tokens[1];
+          toType = tokens[2];
+        }
+      }
 
       if (!amountRaw || !fromType || !toType) {
         await sendNoPing(message.channel, {
           embeds: [
             redPanel(
               'الاستخدام الصحيح:\n' +
-                '`تبديل <الكمية> <من-نوع> <إلى-نوع>`\n' +
-                'مثال: `تبديل 20 تحذير xp`'
+                '`تبديل <الكمية> <من-نوع> <إلى-نوع>` أو `تبديل <من-نوع> <الكمية> <إلى-نوع>`\n' +
+                'مثال: `تبديل 20 تحذير xp` أو `تبديل تحذير 20 xp`'
             )
           ]
         });
@@ -655,8 +758,12 @@ module.exports = {
         const embed = greenPanel(
           [
             `**تم التبديل بنجاح!**`,
-            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}`,
-            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}`
+            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${
+              POINT_TYPE_LABELS[result.fromKey] || result.fromKey
+            }`,
+            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${
+              POINT_TYPE_LABELS[result.toKey] || result.toKey
+            }`
           ].join('\n'),
           '🔄 تبديل النقاط'
         ).setFooter({
@@ -669,14 +776,18 @@ module.exports = {
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التبديل.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(err.message || 'فشل التبديل.')]
+        });
       }
       return;
     }
 
+    // أمر التحويل لشخص آخر
     if (isTransferCommand) {
       const guardKey = `${message.id}:transfer`;
       if (!markProcessed(guardKey)) return;
+
       if (!hasSupportRole) return;
 
       if (tokens.length < 3) {
@@ -764,11 +875,14 @@ module.exports = {
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(err.message || 'فشل التحويل.')]
+        });
       }
       return;
     }
 
+    // أمر التعديل (SET)
     if (isEditCommand) {
       const guardKey = `${message.id}:edit`;
       if (!markProcessed(guardKey)) return;
@@ -813,11 +927,15 @@ module.exports = {
       if (targetArg) {
         targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
-          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('لم أستطع العثور على العضو.')]
+          });
           return;
         }
         if (!targetMember.roles.cache.has(SUPPORT_ROLE_ID)) {
-          await sendNoPing(message.channel, { embeds: [redPanel('العضو المستهدف ليس إدارياً.')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('العضو المستهدف ليس إدارياً.')]
+          });
           return;
         }
         targetId = targetMember.id;
@@ -828,7 +946,7 @@ module.exports = {
       doc.lifetime[pointType] = amount;
       await doc.save();
 
-      await tryPromote(message, targetMember, { announceInChannel: false, dmOnPromote: true });
+      await tryPromote(message, targetMember, { announceInChannel: true, dmOnPromote: true });
 
       const embed = greenPanel(
         `**تم تعيين ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetId}> إلى القيمة: ${amount}**`,
@@ -892,7 +1010,9 @@ module.exports = {
 
       const reason = tokens.join(' ').trim();
       if (!reason) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الرجاء كتابة سبب التحذير.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الرجاء كتابة سبب التحذير.')]
+        });
         return;
       }
 
@@ -908,7 +1028,7 @@ module.exports = {
       const guardKey = `${message.id}:warnings`;
       if (!markProcessed(guardKey)) return;
 
-      const targetArg = tokens.shift();
+      const targetArg = tokens.join(' ').trim();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
@@ -960,7 +1080,7 @@ module.exports = {
 
       try {
         await addPoints({ guildId: message.guild.id, userId: message.author.id, tickets: 1 });
-        await tryPromote(message, message.member, { announceInChannel: false, dmOnPromote: true });
+        await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
       } catch (err) {
         console.error('Error adding ticket points:', err);
       }
@@ -1023,7 +1143,7 @@ module.exports = {
       const guardKey = `${message.id}:xp`;
       if (!markProcessed(guardKey)) return;
 
-      const targetArg = tokens.shift();
+      const targetArg = tokens.join(' ').trim();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
@@ -1079,7 +1199,8 @@ module.exports = {
         .setColor(0xff0000)
         .setAuthor({
           name: `لوحة XP - ${message.guild.name}`,
-          iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
+          iconURL:
+            message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
         })
         .addFields(
           {
@@ -1137,28 +1258,24 @@ module.exports = {
 
       if (!scope) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all` (أو المكافئ بالعربي).')]
+          embeds: [
+            redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all` (أو المكافئ بالعربي).')
+          ]
         });
         return;
       }
 
       const topReplyTag = `top:${scope}:${message.author.id}`;
-      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) return;
+      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
+        return;
+      }
 
       const now = Date.now();
       const docs = await UserXP.find({ guildId: message.guild.id });
 
       const dirtyWrites = [];
       const rows = docs.map(doc => {
-        if (scope !== 'all') {
-          const oldDaily = doc.dailyResetAt;
-          const oldWeekly = doc.weeklyResetAt;
-          const oldMonthly = doc.monthlyResetAt;
-          resetScopes(doc, now);
-          if (oldDaily !== doc.dailyResetAt || oldWeekly !== doc.weeklyResetAt || oldMonthly !== doc.monthlyResetAt) {
-            dirtyWrites.push(doc.save());
-          }
-        }
+        if (scope !== 'all' && resetScopes(doc, now)) dirtyWrites.push(doc.save());
 
         const scoped = getScopedValues(doc, scope, now);
         const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
@@ -1176,7 +1293,9 @@ module.exports = {
       const nonZeroRows = rankedRows.filter(row => row.totalXp > 0);
       const topRows = nonZeroRows.slice(0, TOP_LIMIT);
 
-      if (scope !== 'all' && dirtyWrites.length) Promise.allSettled(dirtyWrites).catch(() => {});
+      if (scope !== 'all' && dirtyWrites.length) {
+        Promise.allSettled(dirtyWrites).catch(() => {});
+      }
 
       if (!nonZeroRows.length) {
         await sendNoPing(message.channel, {
@@ -1201,10 +1320,13 @@ module.exports = {
         .setColor(0xff0000)
         .setAuthor({
           name: `قائمة متصدرين السيرفر - ${scopeLabel(scope)}`,
-          iconURL: message.guild.iconURL({ dynamic: true, size: 256 }) || message.client.user.displayAvatarURL()
+          iconURL:
+            message.guild.iconURL({ dynamic: true, size: 256 }) ||
+            message.client.user.displayAvatarURL()
         })
         .setThumbnail(
-          message.guild.iconURL({ dynamic: true, size: 512 }) || message.client.user.displayAvatarURL()
+          message.guild.iconURL({ dynamic: true, size: 512 }) ||
+            message.client.user.displayAvatarURL()
         )
         .addFields(
           { name: '🏆 المتصدرون', value: mainList || '**لا توجد بيانات.**', inline: false },
