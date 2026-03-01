@@ -1,3 +1,4 @@
+// models/TicketClaim.js
 const mongoose = require('mongoose');
 
 const ticketClaimSchema = new mongoose.Schema({
