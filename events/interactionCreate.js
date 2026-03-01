@@ -1,6 +1,6 @@
 const { EmbedBuilder } = require('discord.js');
 const TicketClaim = require('../models/TicketClaim');
-const { addPoints, tryPromote } = require('../utils/adminProgressService'); // إضافة استيراد للترقيات
+const { addPoints, tryPromote } = require('../utils/adminProgressService');
 
 const SUPPORT_ROLE_ID = '1445473101629493383';
 
@@ -13,20 +13,17 @@ function redPanel(text) {
 module.exports = {
   name: 'interactionCreate',
   async execute(interaction) {
-    // نتأكد أن التفاعل زر وبالـ customId الصحيح
     if (!interaction.isButton()) return;
     if (interaction.customId !== 'confirm_claim') return;
 
-    // التحقق من رتبة الدعم
     if (!interaction.member.roles.cache.has(SUPPORT_ROLE_ID)) {
       return interaction.reply({
-        embeds: [redPanel('This button is restricted to support staff only')],
+        embeds: [redPanel('هذا الزر مخصص لفريق الدعم فقط.')],
         ephemeral: true
       });
     }
 
     try {
-      // التحقق إذا التكت مأخوذ مسبقاً
       const existing = await TicketClaim.findOne({
         guildId: interaction.guild.id,
         channelId: interaction.channel.id
@@ -34,12 +31,11 @@ module.exports = {
 
       if (existing) {
         return interaction.reply({
-          embeds: [redPanel('This ticket has already been claimed')],
+          embeds: [redPanel('هذه التذكرة مستلمة مسبقاً.')],
           ephemeral: true
         });
       }
 
-      // إنشاء سجل الاستلام
       await TicketClaim.create({
         guildId: interaction.guild.id,
         channelId: interaction.channel.id,
@@ -47,33 +43,29 @@ module.exports = {
         claimedAt: new Date()
       });
 
-      // إضافة نقاط التذاكر ومحاولة الترقية (الإصلاح الرئيسي)
       await addPoints({ guildId: interaction.guild.id, userId: interaction.user.id, tickets: 1 });
-      await tryPromote(interaction, interaction.member); // للتحقق من الترقية
+      await tryPromote(interaction, interaction.member);
 
-      // رد مخفي لصاحب الزر
       await interaction.reply({
-        embeds: [redPanel('Ticket successfully registered to you')],
+        embeds: [redPanel('تم تسجيل التذكرة باسمك بنجاح.')],
         ephemeral: true
       });
 
-      // رسالة في التكت نفسه
       await interaction.channel.send({
-        embeds: [redPanel(`Ticket claimed by ${interaction.user.username}`)]
+        embeds: [redPanel(`تم استلام التذكرة بواسطة ${interaction.user.username}`)]
       });
 
     } catch (error) {
       console.error('Error in confirm_claim button:', error);
 
-      // لو صار أي خطأ نرسل رد بدال ما يظهر "This interaction failed"
       if (!interaction.replied && !interaction.deferred) {
         await interaction.reply({
-          embeds: [redPanel('An error occurred while claiming this ticket')],
+          embeds: [redPanel('حدث خطأ أثناء استلام التذكرة.')],
           ephemeral: true
         });
       } else {
         await interaction.followUp({
-          embeds: [redPanel('An error occurred while claiming this ticket')],
+          embeds: [redPanel('حدث خطأ أثناء استلام التذكرة.')],
           ephemeral: true
         });
       }
