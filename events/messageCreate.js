@@ -32,14 +32,13 @@ const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
 const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
 const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_ALIASES = ['t', 'top', 'توب'];
-const EDIT_ALIASES = ['تعديل', 'edit', 'mod'];
+const EDIT_ALIASES = ALIASES.EDIT || ['تعديل', 'edit', 'mod', 'set', 'ضبط', 'تغيير', 'عدل'];
 
 const TEXT_XP_MIN = 15;
 const TEXT_XP_MAX = 25;
 const TEXT_XP_COOLDOWN = 60_000;
 const TOP_LIMIT = 10;
-const TOP_PANEL_IMAGE_URL =
-  'https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a3d732&is=69a285b2&hm=fc18c7619be199eef08ad19d733f6f7012952a24aa55a8edff97333d7420d76c';
+const TOP_PANEL_IMAGE_URL = 'https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a3d732&is=69a285b2&hm=fc18c7619be199eef08ad19d733f6f7012952a24aa55a8edff97333d7420d76c';
 
 const TOP_REPLY_TTL = 10_000;
 const MANAGED_REPLY_COOLDOWN = 2000;
@@ -107,22 +106,9 @@ async function sendManagedEmbedOnce(channel, tag, payload, ttl) {
   await sendNoPing(channel, payload);
 }
 
-// === كل البنلز أحمر ===
 const redPanel = (text, title = null) => {
   const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
-  if (title) embed.setTitle(`**${title}**`);
-  return embed;
-};
-
-const bluePanel = (text, title = null) => {
-  const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
-  if (title) embed.setTitle(`**${title}**`);
-  return embed;
-};
-
-const greenPanel = (text, title = null) => {
-  const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
-  if (title) embed.setTitle(`**${title}**`);
+  if (title) embed.setTitle(title);
   return embed;
 };
 
@@ -196,7 +182,7 @@ async function addWarningAndNotify(message, member, reason) {
   doc.total = (doc.total ?? 0) + 1;
   await doc.save();
 
-  await addPoints({ guildId: message.guild.id, userId: message.author.id, warnings: 1 });
+  await addPoints({ guildId: message.guild.id, userId: message.author.id, warns: 1 });
   await tryPromote(message, message.member);
 
   const detailEmbed = warnDetailEmbed({ target: member, moderator: message.member, reason, caseId });
@@ -230,14 +216,14 @@ async function showWarnings(message, member) {
   const lines = last10
     .map(inf => {
       const when = new Date(inf.createdAt).toLocaleString('ar-SA');
-      return `**• رقم الحالة: ${inf.caseId}\nالزمان: ${when}\nبواسطة: <@${inf.moderatorId}>\nالسبب: ${inf.reason}**`;
+      return `**• رقم الحالة: ${inf.caseId}**\n**الزمان: ${when}**\n**بواسطة: <@${inf.moderatorId}>**\n**السبب: ${inf.reason}**`;
     })
     .join('\n\n');
 
   const embed = new EmbedBuilder()
     .setColor(0xff0000)
-    .setAuthor({ name: `**تحذيرات ${member.user.tag}**`, iconURL: member.displayAvatarURL({ size: 128 }) })
-    .setDescription(`**${lines}**`)
+    .setAuthor({ name: `تحذيرات ${member.user.tag}`, iconURL: member.displayAvatarURL({ size: 128 }) })
+    .setDescription(lines)
     .setFooter({
       text: `الإجمالي: ${doc.total} • بطلب من ${message.author.tag}`,
       iconURL: message.author.displayAvatarURL({ size: 128 })
@@ -411,7 +397,7 @@ function formatTopField(rows, key) {
 }
 
 function formatProgress(current, required) {
-  if (!required || required <= 0) return '—';
+  if (!required || required <= 0) return '**—**';
   const pct = Math.min(100, Math.round((current / required) * 100));
   return `**${current}/${required} (${pct}%)**`;
 }
@@ -444,10 +430,10 @@ module.exports = {
     const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
     const isXpCommand = XP_ALIASES.includes(command);
     const isTopCommand = TOP_ALIASES.includes(command);
-    const isTasksCommand = ALIASES.TASKS?.includes(command);
-    const isStatsCommand = ALIASES.STATS?.includes(command);
-    const isConvertCommand = ALIASES.CONVERT?.includes(command);
-    const isTransferCommand = ALIASES.TRANSFER?.includes(command);
+    const isTasksCommand = ALIASES.TASKS.includes(command);
+    const isStatsCommand = ALIASES.STATS.includes(command);
+    const isConvertCommand = ALIASES.CONVERT.includes(command);
+    const isTransferCommand = ALIASES.TRANSFER.includes(command);
     const isEditCommand = EDIT_ALIASES.includes(command);
 
     if (
@@ -476,17 +462,14 @@ module.exports = {
     if (isTasksCommand) {
       const guardKey = `${message.id}:tasks`;
       if (!markProcessed(guardKey)) return;
-
       if (!hasSupportRole) return;
-
-      await sendNoPing(message.channel, { embeds: [redPanel('**أمر المهام سيتم تفعيله لاحقاً.**')] });
+      await sendNoPing(message.channel, { embeds: [redPanel('أمر المهام سيتم تفعيله لاحقاً.')] });
       return;
     }
 
     if (isStatsCommand) {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
-
       if (!hasSupportRole) return;
 
       const targetArg = tokens.shift();
@@ -495,11 +478,11 @@ module.exports = {
       if (targetArg) {
         const fetchedMember = await fetchMember(message.guild, targetArg);
         if (!fetchedMember) {
-          await sendNoPing(message.channel, { embeds: [redPanel('**لم أستطع العثور على العضو.**')] });
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
         }
         if (!fetchedMember.roles.cache.has(SUPPORT_ROLE_ID)) {
-          await sendNoPing(message.channel, { embeds: [redPanel('**هذا العضو ليس إدارياً.**')] });
+          await sendNoPing(message.channel, { embeds: [redPanel('هذا العضو ليس إدارياً.')] });
           return;
         }
         member = fetchedMember;
@@ -517,7 +500,7 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `**بطاقة الإداري - ${member.user.tag}**`,
+          name: `بطاقة الإداري - ${member.user.tag}`,
           iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
         })
         .addFields(
@@ -548,7 +531,7 @@ module.exports = {
           }
         )
         .setFooter({
-          text: `**بناءً على طلب ${message.author.tag}**`,
+          text: `بناءً على طلب ${message.author.tag}`,
           iconURL: message.author.displayAvatarURL({ size: 128 })
         });
 
@@ -556,9 +539,9 @@ module.exports = {
         embed.addFields({
           name: `**🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}**`,
           value: [
-            `**🎟️** ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-            `**⚠️** ${formatProgress(doc.points.warns, nextReq.warns)}`,
-            `**✨** ${formatProgress(doc.points.xp, nextReq.xp)}`
+            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
+            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
+            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
           ].join('\n'),
           inline: false
         });
@@ -577,7 +560,6 @@ module.exports = {
     if (isConvertCommand) {
       const guardKey = `${message.id}:convert`;
       if (!markProcessed(guardKey)) return;
-
       if (!hasSupportRole) return;
 
       const [amountRaw, fromType, toType] = tokens;
@@ -599,24 +581,22 @@ module.exports = {
 
       try {
         const result = await convertPoints(doc, fromType, amount, toType);
-        const embed = greenPanel(
-          [
+        const embed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setTitle('**🔄 تبديل النقاط**')
+          .setDescription([
             `**تم التبديل بنجاح!**`,
             `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} **-${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}**`,
             `${POINT_TYPE_EMOJIS[result.toKey] || '•'} **+${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}**`
-          ].join('\n'),
-          '**🔄 تبديل النقاط**'
-        ).setFooter({
-          text: `**${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}**`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
+          ].join('\n'))
+          .setFooter({
+            text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+            iconURL: message.author.displayAvatarURL({ size: 128 })
+          });
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(`**${err.message || 'فشل التبديل.'}**`)] });
+        await sendNoPing(message.channel, { embeds: [redPanel(err.message || '**فشل التبديل.**')] });
       }
       return;
     }
@@ -624,7 +604,6 @@ module.exports = {
     if (isTransferCommand) {
       const guardKey = `${message.id}:transfer`;
       if (!markProcessed(guardKey)) return;
-
       if (!hasSupportRole) return;
 
       if (tokens.length < 3) {
@@ -633,13 +612,12 @@ module.exports = {
             '**الاستخدام الصحيح:**\n' +
             '`تحويل <نوع> <@عضو> <الكمية>`\n\n' +
             '**أنواع النقاط:**\n' +
-            '**• تذاكر:** `تكت`, `تذاكر`, `تكتات`\n' +
-            '**• تحذيرات:** `تحذير`, `تحذيرات`, `تحدير`\n' +
-            '**• خبرة:** `اكسبي`, `xp`, `خبرة`\n\n' +
+            '• **تذاكر:** `تكت`, `تذاكر`, `تكتات`\n' +
+            '• **تحذيرات:** `تحذير`, `تحذيرات`, `تحدير`\n' +
+            '• **خبرة:** `اكسبي`, `xp`, `خبرة`\n\n' +
             '**أمثلة:**\n' +
             '`تحويل تكت @User 50`\n' +
-            '`تحويل تحذير 123456789 30`\n' +
-            '`تحويل xp @User 1000`'
+            '`تحويل تحذير 123456789 30`'
           )]
         });
         return;
@@ -655,9 +633,9 @@ module.exports = {
           embeds: [redPanel(
             '**نوع النقاط غير معروف.**\n\n' +
             '**الأنواع المتاحة:**\n' +
-            '**• تذاكر:** `تكت`, `تذاكر`, `تكتات`\n' +
-            '**• تحذيرات:** `تحذير`, `تحذيرات`, `تحدير`\n' +
-            '**• خبرة:** `اكسبي`, `xp`, `خبرة`'
+            '• **تذاكر:** `تكت`, `تذاكر`, `تكتات`\n' +
+            '• **تحذيرات:** `تحذير`, `تحذيرات`, `تحدير`\n' +
+            '• **خبرة:** `اكسبي`, `xp`, `خبرة`'
           )]
         });
         return;
@@ -690,32 +668,29 @@ module.exports = {
 
       try {
         const result = await transferPoints(fromDoc, toDoc, typeArg, amount);
-        const embed = greenPanel(
-          [
+        const embed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setTitle('**📤 تحويل النقاط**')
+          .setDescription([
             `**تم التحويل بنجاح!**`,
             ``,
             `**من:** <@${message.author.id}>`,
             `**إلى:** <@${targetMember.id}>`,
             `**النوع:** ${POINT_TYPE_LABELS[result.docKey] || result.docKey}`,
-            `**الكمية:** ${POINT_TYPE_EMOJIS[result.docKey] || '•'} ${result.amount}`
-          ].join('\n'),
-          '**📤 تحويل النقاط**'
-        ).setFooter({
-          text: `**${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}**`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
+            `**الكمية:** ${POINT_TYPE_EMOJIS[result.docKey] || '•'} **${result.amount}**`
+          ].join('\n'))
+          .setFooter({
+            text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+            iconURL: message.author.displayAvatarURL({ size: 128 })
+          });
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(`**${err.message || 'فشل التحويل.'}**`)] });
+        await sendNoPing(message.channel, { embeds: [redPanel(err.message || '**فشل التحويل.**')] });
       }
       return;
     }
 
-    // === أمر التعديل (استبدال بدل إضافة) ===
     if (isEditCommand) {
       const guardKey = `${message.id}:edit`;
       if (!markProcessed(guardKey)) return;
@@ -726,7 +701,14 @@ module.exports = {
 
       if (tokens.length < 2) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('**الاستخدام:** `تعديل <نوع> <كمية> [@عضو اختياري]`\n**أمثلة:**\n`تعديل تكت 1000` أو `تعديل تحذيرات @user 500`')]
+          embeds: [redPanel(
+            '**الاستخدام:**\n' +
+            '`تعديل <نوع> <القيمة_الجديدة> [@عضو اختياري]`\n\n' +
+            '**أمثلة:**\n' +
+            '• `تعديل تكت 100` - يضبط تذاكرك على 100\n' +
+            '• `تعديل تحذيرات 50 @user` - يضبط تحذيرات العضو على 50\n' +
+            '• `تعديل xp 1000 @user` - يضبط XP العضو على 1000'
+          )]
         });
         return;
       }
@@ -738,14 +720,14 @@ module.exports = {
       const pointType = normalizePointKey(typeArg);
       if (!pointType) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('**نوع غير معروف. استخدم: تكت، تحذيرات، xp، إلخ.**')]
+          embeds: [redPanel('**نوع غير معروف. استخدم:** تكت، تحذيرات، xp، إلخ.')]
         });
         return;
       }
 
-      const amount = Number(amountArg);
-      if (!Number.isFinite(amount) || amount < 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('**الكمية يجب أن تكون رقم صالح (0 أو أكبر).**')] });
+      const newValue = Number(amountArg);
+      if (!Number.isFinite(newValue) || newValue < 0) {
+        await sendNoPing(message.channel, { embeds: [redPanel('**القيمة يجب أن تكون رقم صالح (0 أو أكبر).**')] });
         return;
       }
 
@@ -765,32 +747,29 @@ module.exports = {
         targetId = targetMember.id;
       }
 
-      const doc = await getOrCreate(message.guild.id, targetId);
-      const oldValue = doc.points[pointType];
-
-      // === التعديل: تعيين مباشر (استبدال) ===
-      await setPoints({
+      const result = await setPoints({
         guildId: message.guild.id,
         userId: targetId,
-        [pointType]: amount
+        pointType: pointType,
+        amount: newValue
       });
 
-      // محاولة ترقية بعد التعديل
       await tryPromote(message, targetMember);
 
-      const changeText = amount > oldValue 
-        ? `إضافة **${amount - oldValue}**` 
-        : (amount < oldValue 
-          ? `خصم **${oldValue - amount}**` 
-          : `تعيين على**${amount}**`);
-
-      const embed = greenPanel(
-        `**تم ${changeText} ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetId}>!**\n**القيمة السابقة:** ${oldValue} → **القيمة الجديدة:** ${amount}`,
-        '**✏️ تعديل الإحصائيات**'
-      ).setFooter({
-        text: `**${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}**`,
-        iconURL: message.author.displayAvatarURL({ size: 128 })
-      });
+      const embed = new EmbedBuilder()
+        .setColor(0xff0000)
+        .setTitle('**✏️ تعديل الإحصائيات**')
+        .setDescription([
+          `**تم تعديل ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetId}>**`,
+          ``,
+          `**القيمة السابقة:** ${result.oldValue}`,
+          `**القيمة الجديدة:** ${result.newValue}`,
+          `**الفرق:** ${result.difference >= 0 ? '+' : ''}${result.difference}`
+        ].join('\n'))
+        .setFooter({
+          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+          iconURL: message.author.displayAvatarURL({ size: 128 })
+        });
 
       await sendNoPing(message.channel, { embeds: [embed] });
       return;
@@ -887,7 +866,7 @@ module.exports = {
       if (ticketClaim) {
         if (ticketClaim.claimedById === message.author.id) {
           await sendManagedEmbedOnce(message.channel, 'claim-self', {
-            embeds: [bluePanel('**لقد استلمت هذه التذكرة بالفعل.**')]
+            embeds: [redPanel('**لقد استلمت هذه التذكرة بالفعل.**')]
           });
         } else {
           await sendManagedEmbedOnce(message.channel, 'claim-other', {
@@ -923,7 +902,7 @@ module.exports = {
       }
 
       await sendManagedEmbedOnce(message.channel, 'claim-success', {
-        embeds: [bluePanel(`**✅ <@${message.author.id}> قام باستلام التذكرة.**`)]
+        embeds: [redPanel(`**✅ <@${message.author.id}> قام باستلام التذكرة.**`)]
       });
       return;
     }
@@ -961,7 +940,7 @@ module.exports = {
 
       await TicketClaim.deleteOne({ channelId: message.channel.id });
       await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
-        embeds: [bluePanel(`**✅ <@${message.author.id}> ألغى استلام التذكرة.**`)]
+        embeds: [redPanel(`**✅ <@${message.author.id}> ألغى استلام التذكرة.**`)]
       });
       return;
     }
@@ -1025,7 +1004,7 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `**لوحة XP - ${message.guild.name}**`,
+          name: `لوحة XP - ${message.guild.name}`,
           iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
         })
         .addFields(
@@ -1064,10 +1043,7 @@ module.exports = {
           }
         )
         .setFooter({
-          text: `**${message.author.username} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}**`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -1085,7 +1061,7 @@ module.exports = {
       if (!scope) {
         await sendNoPing(message.channel, {
           embeds: [
-            redPanel('**استخدم:** `top day`, `top week`, `top month`, أو `top all`\n**(أو المكافئ بالعربي).**')
+            redPanel('**استخدم:** `top day`, `top week`, `top month`, **أو** `top all`\n**(أو المكافئ بالعربي).**')
           ]
         });
         return;
@@ -1145,7 +1121,7 @@ module.exports = {
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `**قائمة متصدرين السيرفر - ${scopeLabel(scope)}**`,
+          name: `قائمة متصدرين السيرفر - ${scopeLabel(scope)}`,
           iconURL: message.guild.iconURL({ dynamic: true, size: 256 }) || message.client.user.displayAvatarURL()
         })
         .setThumbnail(
@@ -1158,10 +1134,7 @@ module.exports = {
           { name: '**🎙️ Top Voice XP**', value: formatTopField(topRows, 'voiceXp'), inline: true }
         )
         .setFooter({
-          text: `**${message.author.username} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}**`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
