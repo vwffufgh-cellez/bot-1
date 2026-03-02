@@ -17,7 +17,7 @@ const client = new Client({
 
 // ================= MongoDB =================
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("MongoDB Connected"))
+  .then(() => console.log('MongoDB Connected'))
   .catch(err => console.error(err));
 
 // ================= تحميل الأحداث =================
@@ -26,6 +26,7 @@ const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'
 
 for (const file of eventFiles) {
   const event = require(`./events/${file}`);
+  console.log('[EVENT LOADED]', file, '=>', event.name);
   client.on(event.name, (...args) => event.execute(...args, client));
 }
 
@@ -33,10 +34,15 @@ for (const file of eventFiles) {
 // كل يوم أحد الساعة 00:00
 cron.schedule('0 0 * * 0', async () => {
   try {
-    await UserXP.updateMany({}, {
-      weeklyTextXP: 0,
-      weeklyVoiceXP: 0
-    });
+    await UserXP.updateMany(
+      {},
+      {
+        $set: {
+          weeklyTextXp: 0,
+          weeklyVoiceXp: 0
+        }
+      }
+    );
     console.log('Weekly XP Reset Done');
   } catch (err) {
     console.error('Weekly Reset Error:', err);
@@ -47,10 +53,15 @@ cron.schedule('0 0 * * 0', async () => {
 // أول يوم من كل شهر الساعة 00:00
 cron.schedule('0 0 1 * *', async () => {
   try {
-    await UserXP.updateMany({}, {
-      monthlyTextXP: 0,
-      monthlyVoiceXP: 0
-    });
+    await UserXP.updateMany(
+      {},
+      {
+        $set: {
+          monthlyTextXp: 0,
+          monthlyVoiceXp: 0
+        }
+      }
+    );
     console.log('Monthly XP Reset Done');
   } catch (err) {
     console.error('Monthly Reset Error:', err);
