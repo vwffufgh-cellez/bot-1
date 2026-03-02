@@ -3,11 +3,11 @@
 const SUPPORT_ROLE_ID = '1445473101629493383';
 
 const ADMIN_LEVELS = [
-  { level: 1, roleId: '1445473101629493383', name: 'إداري مبتدئ', req: { tickets: 15, warns: 10, xp: 3000 } },
-  { level: 2, roleId: '1453212249375244410', name: 'إداري 2', req: { tickets: 20, warns: 15, xp: 5000 } },
-  { level: 3, roleId: '1445473097888170105', name: 'إداري 3', req: { tickets: 25, warns: 20, xp: 6000 } },
-  { level: 4, roleId: '1445473095811989524', name: 'إداري 4', req: { tickets: 30, warns: 25, xp: 7000 } },
-  { level: 5, roleId: SUPPORT_ROLE_ID, name: 'إداري 5', req: { tickets: 35, warns: 30, xp: 8000 } },
+  { level: 1, roleId: '1445473101629493383', name: '<@&1445473101629493383>', req: { tickets: 15, warns: 10, xp: 3000 } },
+  { level: 2, roleId: '1453212249375244410', name: '<@&1453212249375244410>', req: { tickets: 20, warns: 15, xp: 5000 } },
+  { level: 3, roleId: '1445473097888170105', name: '<@&1445473097888170105>', req: { tickets: 25, warns: 20, xp: 6000 } },
+  { level: 4, roleId: '1445473097175269497', name: '<@&1445473097175269497>', req: { tickets: 30, warns: 25, xp: 7000 } },
+  { level: 5, roleId: '1445473095811989524', name: '<@&1445473095811989524>', req: { tickets: 35, warns: 30, xp: 8000 } },
   { level: 6, roleId: SUPPORT_ROLE_ID, name: 'إداري 6', req: { tickets: 40, warns: 35, xp: 9000 } },
   { level: 7, roleId: SUPPORT_ROLE_ID, name: 'إداري 7', req: { tickets: 45, warns: 40, xp: 10000 } },
   { level: 8, roleId: SUPPORT_ROLE_ID, name: 'إداري 8', req: { tickets: 50, warns: 50, xp: 11000 } }
