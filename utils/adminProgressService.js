@@ -6,7 +6,9 @@ const {
   POINT_TYPE_ALIASES,
   SUPPORT_ROLE_ID,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
-  WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS
+  WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS,
+  ADMIN_WARN_TIERS = [],
+  POINT_VALUE = {}
 } = require('../config/adminProgressConfig');
 
 const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
@@ -46,8 +48,25 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-function getMultiplier() {
-  return 1.0;
+/**
+ * يأخذ أعلى مضاعف من رتب التحذير فقط (بدون stacking).
+ * مثال: إذا معه تحذير1 و2 و3 => يأخذ 2.1 فقط.
+ */
+function getMultiplier(member) {
+  if (!member?.roles?.cache) return 1.0;
+  if (!Array.isArray(ADMIN_WARN_TIERS) || !ADMIN_WARN_TIERS.length) return 1.0;
+
+  let max = 1.0;
+  for (const tier of ADMIN_WARN_TIERS) {
+    const roleId = String(tier?.roleId || '');
+    const multiplier = Number(tier?.multiplier || 1);
+
+    if (!roleId || !Number.isFinite(multiplier) || multiplier <= 0) continue;
+    if (member.roles.cache.has(roleId) && multiplier > max) {
+      max = multiplier;
+    }
+  }
+  return max;
 }
 
 function getNextLevelConfig(currentLevel) {
@@ -81,6 +100,19 @@ function normalizePointKey(key) {
   return null;
 }
 
+function pointValueByKey(key) {
+  if (key === 'tickets') return Number(POINT_VALUE.ticket || 300);
+  if (key === 'warns') return Number(POINT_VALUE.warn || 150);
+  if (key === 'xp') return Number(POINT_VALUE.xp || 1);
+  return NaN;
+}
+
+/**
+ * تحويل بالنِّسَب الصحيحة:
+ * 1 ticket = 300 xp
+ * 1 warn = 150 xp
+ * 1 ticket = 2 warns
+ */
 async function convertPoints(doc, fromType, amount, toType) {
   const fromKey = normalizePointKey(fromType);
   const toKey = normalizePointKey(toType);
@@ -96,11 +128,24 @@ async function convertPoints(doc, fromType, amount, toType) {
 
   if (doc.points[fromKey] < amt) throw new Error('لا تملك نقاط كافية للتبديل.');
 
+  const fromValue = pointValueByKey(fromKey);
+  const toValue = pointValueByKey(toKey);
+
+  if (!Number.isFinite(fromValue) || !Number.isFinite(toValue) || fromValue <= 0 || toValue <= 0) {
+    throw new Error('قيمة التحويل غير صحيحة في الإعدادات.');
+  }
+
+  const base = amt * fromValue;
+  const outRaw = base / toValue;
+  const out = Math.floor(outRaw); // نقاط صحيحة
+
+  if (out <= 0) throw new Error('الكمية الناتجة أقل من الحد الأدنى للتحويل.');
+
   doc.points[fromKey] -= amt;
-  doc.points[toKey] += amt;
+  doc.points[toKey] += out;
 
   await doc.save();
-  return { fromKey, toKey, amountIn: amt, amountOut: amt };
+  return { fromKey, toKey, amountIn: amt, amountOut: out };
 }
 
 async function transferPoints(fromDoc, toDoc, typeArg, amount) {
@@ -165,15 +210,6 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel) {
   return { removedRoles, addedRoles, fromCfg, toCfg };
 }
 
-/**
- * ترقية:
- * - يخصم المطلوب
- * - يرحّل الفائض
- * - يزيل رتب المستوى القديم + رتب التحذيرات
- * - يضيف رتب المستوى الجديد
- * - إرسال بنل بالقناة + DM
- * - بدون reply مباشر
- */
 async function tryPromote(message, member, options = {}) {
   if (!member?.guild) return { promoted: false };
 
@@ -297,9 +333,6 @@ async function tryPromote(message, member, options = {}) {
   };
 }
 
-/**
- * تنزيل مستوى واحد للخلف (Demote)
- */
 async function demoteOneLevel(guild, member, options = {}) {
   const reason = String(options.reason || '').trim();
   if (!reason) {
