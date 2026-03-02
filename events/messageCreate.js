@@ -205,15 +205,19 @@ async function fetchMember(guild, raw, message = null) {
   } catch {
     return null;
   }
-}
+};
 
 const extractIdFromMention = arg => {
   if (!arg) return null;
-  const match = arg.match(/^<@!?(\d+)>$/);
+  const match = arg.match(/^<@!?(\d{17,20})>$/);
   if (match) return match[1];
-  if (/^\d{15,21}$/.test(arg)) return arg;
+  if (/^\d{17,20}$/.test(arg)) return arg;
   return null;
 };
+
+// تنظيف أحرف الاتجاه المخفية (RTL/LTR marks)
+const stripBidi = s =>
+  String(s || '').replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
 
 function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
   const key = `${guildId}:${modId}:${targetId}:${reason.trim().toLowerCase()}`;
@@ -485,8 +489,25 @@ module.exports = {
     const content = message.content.trim();
     if (!content.length) return;
 
-    const tokens = content.split(/\s+/);
-    const command = tokens.shift().toLowerCase();
+    // =========================
+    // Parsing ثابت (يدعم: "ستات 123" + "123 ستات")
+    // =========================
+    const rawParts = content
+      .split(/\s+/)
+      .filter(Boolean)
+      .map(p => stripBidi(p).trim())
+      .filter(Boolean);
+
+    let command = (rawParts[0] || '').toLowerCase();
+    let tokens = rawParts.slice(1);
+
+    if (!ALIASES.STATS.includes(command) && rawParts.length >= 2) {
+      const last = (rawParts[rawParts.length - 1] || '').toLowerCase();
+      if (ALIASES.STATS.includes(last)) {
+        command = last;
+        tokens = rawParts.slice(0, -1);
+      }
+    }
 
     const isWarnCommand = WARN_ALIASES.includes(command);
     const isWarningsCommand = WARNINGS_ALIASES.includes(command);
@@ -525,141 +546,138 @@ module.exports = {
     const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
     const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
 
-if (isStatsCommand) {
-  const guardKey = `${message.id}:stats`;
-  if (!markProcessed(guardKey)) return;
+    if (isStatsCommand) {
+      const guardKey = `${message.id}:stats`;
+      if (!markProcessed(guardKey)) return;
 
-  if (message.channel.id !== ADMIN_COMMANDS_CHANNEL_ID) {
-    await sendNoPing(message.channel, {
-      embeds: [redPanel(`أمر ستات يعمل فقط في <#${ADMIN_COMMANDS_CHANNEL_ID}>`)]
-    });
-    return;
-  }
-
-  const targetRaw = tokens.join(' ').trim();
-
-  let member = null;
-  let user = null;
-  let targetId = message.author.id;
-
-  // بدون هدف => نفسك
-  if (!targetRaw && !message.mentions.users.size) {
-    member = message.member;
-    user = message.author;
-    targetId = message.author.id;
-  } else {
-    // 1) نحاول كـ Member
-    const fetchedMember = await fetchMember(message.guild, targetRaw, message);
-    if (fetchedMember) {
-      member = fetchedMember;
-      user = fetchedMember.user;
-      targetId = fetchedMember.id;
-    } else {
-      // 2) fallback كـ User ID (حتى لو مو Member داخل السيرفر)
-      const possibleId =
-        (message.mentions.users.first()?.id) ||
-        extractIdFromMention(targetRaw) ||
-        (/^\d{17,20}$/.test(targetRaw) ? targetRaw : null);
-
-      if (possibleId) {
-        try {
-          user = await message.client.users.fetch(possibleId);
-          targetId = possibleId;
-        } catch {}
-      }
-
-      if (!user) {
+      if (message.channel.id !== ADMIN_COMMANDS_CHANNEL_ID) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('لم أستطع العثور على العضو/المستخدم.')]
+          embeds: [redPanel(`أمر ستات يعمل فقط في <#${ADMIN_COMMANDS_CHANNEL_ID}>`)]
         });
         return;
       }
-    }
-  }
 
-  const doc = await getOrCreate(message.guild.id, targetId);
-  const userXpDoc = await UserXP.findOne({
-    guildId: message.guild.id,
-    userId: targetId
-  });
+      const targetRaw = tokens.join(' ').trim();
 
-  const totalUserXp = userXpDoc
-    ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0)
-    : 0;
+      let member = null;
+      let user = null;
+      let targetId = message.author.id;
 
-  // لو target مو Member داخل السيرفر نخلي المضاعف 1
-  const multiplier = member ? getMultiplier(member) : 1;
-  const nextCfg = getNextLevelConfig(doc.level);
-  const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+      if (!targetRaw && !message.mentions.users.size) {
+        member = message.member;
+        user = message.author;
+        targetId = message.author.id;
+      } else {
+        const fetchedMember = await fetchMember(message.guild, targetRaw, message);
+        if (fetchedMember) {
+          member = fetchedMember;
+          user = fetchedMember.user;
+          targetId = fetchedMember.id;
+        } else {
+          const possibleId =
+            (message.mentions.users.first()?.id) ||
+            extractIdFromMention(targetRaw) ||
+            (/^\d{17,20}$/.test(targetRaw) ? targetRaw : null);
 
-  const avatarURL =
-    (member?.displayAvatarURL?.({ size: 256 })) ||
-    (user?.displayAvatarURL?.({ size: 256 })) ||
-    message.guild.iconURL({ dynamic: true });
+          if (possibleId) {
+            try {
+              user = await message.client.users.fetch(possibleId);
+              targetId = possibleId;
+            } catch {}
+          }
 
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setAuthor({
-      name: `بطاقة العضو - ${user?.tag || targetId}`,
-      iconURL: avatarURL
-    })
-    .addFields(
-      { name: '👤 العضو', value: `**<@${targetId}>**`, inline: true },
-      {
-        name: '🛡️ الحالة',
-        value: member
-          ? (member.roles.cache.has(SUPPORT_ROLE_ID) ? '**ضمن فريق الدعم**' : '**عضو عادي**')
-          : '**خارج السيرفر/غير متاح كعضو**',
-        inline: true
-      },
-      {
-        name: '🔢 المستوى الحالي',
-        value: `**Level ${doc.level}**${
-          doc.promotedAt
-            ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>`
-            : ''
-        }`,
-        inline: true
-      },
-      { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-      {
-        name: '🎟️ نقاطك الحالية',
-        value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-        inline: false
-      },
-      { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
-      {
-        name: '📦 إجمالي مساهماتك',
-        value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
-        inline: false
+          if (!user) {
+            await sendNoPing(message.channel, {
+              embeds: [redPanel('لم أستطع العثور على العضو/المستخدم.')]
+            });
+            return;
+          }
+        }
       }
-    )
-    .setFooter({
-      text: `بناءً على طلب ${message.author.tag}`,
-      iconURL: message.author.displayAvatarURL({ size: 128 })
-    });
 
-  if (nextReq) {
-    embed.addFields({
-      name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-      value: [
-        `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-        `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-        `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-      ].join('\n'),
-      inline: false
-    });
-  } else {
-    embed.addFields({
-      name: '🚀 الترقية القادمة',
-      value: '**أنت في أعلى مستوى متاح حالياً.**',
-      inline: false
-    });
-  }
+      const doc = await getOrCreate(message.guild.id, targetId);
+      const userXpDoc = await UserXP.findOne({
+        guildId: message.guild.id,
+        userId: targetId
+      });
 
-  await sendNoPing(message.channel, { embeds: [embed] });
-  return;
-}
+      const totalUserXp = userXpDoc
+        ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0)
+        : 0;
+
+      const multiplier = member ? getMultiplier(member) : 1;
+      const nextCfg = getNextLevelConfig(doc.level);
+      const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+      const avatarURL =
+        (member?.displayAvatarURL?.({ size: 256 })) ||
+        (user?.displayAvatarURL?.({ size: 256 })) ||
+        message.guild.iconURL({ dynamic: true });
+
+      const embed = new EmbedBuilder()
+        .setColor(0xff0000)
+        .setAuthor({
+          name: `بطاقة العضو - ${user?.tag || targetId}`,
+          iconURL: avatarURL
+        })
+        .addFields(
+          { name: '👤 العضو', value: `**<@${targetId}>**`, inline: true },
+          {
+            name: '🛡️ الحالة',
+            value: member
+              ? (member.roles.cache.has(SUPPORT_ROLE_ID) ? '**ضمن فريق الدعم**' : '**عضو عادي**')
+              : '**خارج السيرفر/غير متاح كعضو**',
+            inline: true
+          },
+          {
+            name: '🔢 المستوى الحالي',
+            value: `**Level ${doc.level}**${
+              doc.promotedAt
+                ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>`
+                : ''
+            }`,
+            inline: true
+          },
+          { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+          {
+            name: '🎟️ نقاطك الحالية',
+            value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
+            inline: false
+          },
+          { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
+          {
+            name: '📦 إجمالي مساهماتك',
+            value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
+            inline: false
+          }
+        )
+        .setFooter({
+          text: `بناءً على طلب ${message.author.tag}`,
+          iconURL: message.author.displayAvatarURL({ size: 128 })
+        });
+
+      if (nextReq) {
+        embed.addFields({
+          name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
+          value: [
+            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
+            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
+            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
+          ].join('\n'),
+          inline: false
+        });
+      } else {
+        embed.addFields({
+          name: '🚀 الترقية القادمة',
+          value: '**أنت في أعلى مستوى متاح حالياً.**',
+          inline: false
+        });
+      }
+
+      await sendNoPing(message.channel, { embeds: [embed] });
+      return;
+    }
+
     if (isBreakCommand) {
       const guardKey = `${message.id}:break`;
       if (!markProcessed(guardKey)) return;
@@ -908,7 +926,6 @@ if (isStatsCommand) {
       return;
     }
 
-    // تحذير: يعمل فقط في الشات المحدد
     if (isWarnCommand) {
       const guardKey = `${message.id}:warn`;
       if (!markProcessed(guardKey)) return;
@@ -967,7 +984,6 @@ if (isStatsCommand) {
       return;
     }
 
-    // سجل التحذيرات: نفس الشات المحدد
     if (isWarningsCommand) {
       const guardKey = `${message.id}:warnings`;
       if (!markProcessed(guardKey)) return;
@@ -1031,8 +1047,8 @@ if (isStatsCommand) {
       try {
         await AdminStats.findOneAndUpdate(
           { guildId: message.guild.id, adminId: message.author.id },
-          { $inc: { claimsCount: 1 } },
-          { upsert: true }
+          { $inc: { ticketsClaimed: 1, claimsCount: 1 } },
+          { upsert: true, new: true }
         );
       } catch (err) {
         console.error('Error updating admin stats:', err);
