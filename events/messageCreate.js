@@ -1,4 +1,3 @@
-// events/messageCreate.js
 const { Events, EmbedBuilder, PermissionsBitField } = require('discord.js');
 const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
@@ -153,35 +152,34 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
     });
 };
 
-const extractIdFromMention = arg => {
-  if (!arg) return null;
-  const match = String(arg).match(/^<@!?(\d+)>$/);
-  if (match) return match[1];
-  if (/^\d{15,21}$/.test(String(arg))) return String(arg);
-  return null;
-};
+// =========================
+// خارج messageCreate (مرة وحدة فقط)
+// =========================
+async function fetchMember(guild, raw, message = null) {
+  if (!raw && !message) return null;
 
-// ✅ نسخة أقوى: تدعم المنشن الحقيقي + mention نصي + id + username/tag/nickname
-const fetchMember = async (guild, arg, message = null) => {
-  if (!arg && !message) return null;
-
-  // أولوية للمنشن الحقيقي من الرسالة
+  // 1) أولوية للمنشن الحقيقي من الرسالة
   if (message?.mentions?.users?.size) {
     const u = message.mentions.users.first();
     if (u) {
       try {
         return await guild.members.fetch(u.id);
-      } catch {}
+      } catch {
+        // ignore
+      }
     }
   }
 
-  const raw = String(arg || '').trim();
-  if (!raw) return null;
+  const query = (raw || '').trim();
+  if (!query) return null;
 
-  const mentionId = raw.match(/^<@!?(\d{17,20})>$/)?.[1];
-  const directId = /^\d{17,20}$/.test(raw) ? raw : null;
-  const id = mentionId || directId || extractIdFromMention(raw);
+  // 2) mention نصي: <@123> أو <@!123>
+  const mentionId = query.match(/^<@!?(\d{17,20})>$/)?.[1];
 
+  // 3) id مباشر
+  const directId = /^\d{17,20}$/.test(query) ? query : null;
+
+  const id = mentionId || directId;
   if (id) {
     try {
       return await guild.members.fetch(id);
@@ -190,22 +188,31 @@ const fetchMember = async (guild, arg, message = null) => {
     }
   }
 
-  const normalized = raw.toLowerCase();
-
+  // 4) بحث بالاسم/النك
   try {
-    const queried = await guild.members.fetch({ query: raw, limit: 10 });
-    if (!queried?.size) return null;
+    const list = await guild.members.fetch({ query, limit: 10 });
+    if (!list?.size) return null;
 
+    const q = query.toLowerCase();
     return (
-      queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
-      queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
-      queried.find(m => (m.nickname || '').toLowerCase() === normalized) ||
-      queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
-      queried.first()
+      list.find(
+        (m) =>
+          m.user.username.toLowerCase() === q ||
+          m.user.tag.toLowerCase() === q ||
+          (m.nickname && m.nickname.toLowerCase() === q)
+      ) || list.first()
     );
   } catch {
     return null;
   }
+}
+
+const extractIdFromMention = arg => {
+  if (!arg) return null;
+  const match = arg.match(/^<@!?(\d+)>$/);
+  if (match) return match[1];
+  if (/^\d{15,21}$/.test(arg)) return arg;
+  return null;
 };
 
 function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
@@ -518,7 +525,8 @@ module.exports = {
     const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
     const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
 
-    // ✅ stats متاح للجميع، باقي الأوامر المقيدة بالدعم تظل كما هي داخل بلوكاتها الخاصة
+    // مهم: لا تمنع stats بفلتر الرتبة العام
+    if (!hasSupportRole && !isStatsCommand) return;
 
     if (isStatsCommand) {
       const guardKey = `${message.id}:stats`;
@@ -531,10 +539,11 @@ module.exports = {
         return;
       }
 
-      // الأمر متاح للكل، لكن البطاقة فقط لعضو الدعم المستهدف
+      // ✅ الأمر متاح للكل، لكن البطاقة فقط للي معه رتبة الدعم
       const targetRaw = tokens.join(' ').trim();
       let member = message.member;
 
+      // استخدام الدالة القوية (مع message) لالتقاط المنشن حتى لو الكاش ناقص
       if (targetRaw || message.mentions.users.size) {
         const fetchedMember = await fetchMember(message.guild, targetRaw, message);
         if (!fetchedMember) {
@@ -651,7 +660,7 @@ module.exports = {
         return;
       }
 
-      const targetMember = await fetchMember(message.guild, targetArg, message);
+      const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
         return;
@@ -772,7 +781,7 @@ module.exports = {
         return;
       }
 
-      const targetMember = await fetchMember(message.guild, targetArg, message);
+      const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
         return;
@@ -853,7 +862,7 @@ module.exports = {
       let targetId = message.author.id;
 
       if (targetArg) {
-        targetMember = await fetchMember(message.guild, targetArg, message);
+        targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -907,7 +916,7 @@ module.exports = {
         return;
       }
 
-      const targetMember = await fetchMember(message.guild, targetArg, message);
+      const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
         return;
@@ -956,7 +965,7 @@ module.exports = {
       }
 
       const targetArg = tokens.join(' ').trim();
-      const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
+      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
         return;
@@ -1055,7 +1064,7 @@ module.exports = {
       if (!markProcessed(guardKey)) return;
 
       const targetArg = tokens.join(' ').trim();
-      const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
+      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
       if (!member) {
         await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
         return;
