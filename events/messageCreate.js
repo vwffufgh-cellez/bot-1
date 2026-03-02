@@ -515,7 +515,47 @@ module.exports = {
     const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
     const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
 
-  if (isStatsCommand) {
+// حطها مرة وحدة فوق (خارج messageCreate)
+async function fetchMember(guild, raw) {
+  if (!raw) return null;
+
+  const query = raw.trim();
+
+  // 1) mention: <@123> أو <@!123>
+  const mentionId = query.match(/^<@!?(\d{17,20})>$/)?.[1];
+
+  // 2) id مباشر
+  const directId = /^\d{17,20}$/.test(query) ? query : null;
+
+  const id = mentionId || directId;
+  if (id) {
+    try {
+      return await guild.members.fetch(id);
+    } catch {
+      return null;
+    }
+  }
+
+  // 3) بحث بالاسم/النك
+  try {
+    const list = await guild.members.fetch({ query, limit: 10 });
+    if (!list?.size) return null;
+
+    const q = query.toLowerCase();
+    return (
+      list.find(
+        (m) =>
+          m.user.username.toLowerCase() === q ||
+          m.user.tag.toLowerCase() === q ||
+          (m.nickname && m.nickname.toLowerCase() === q)
+      ) || list.first()
+    );
+  } catch {
+    return null;
+  }
+}
+
+if (isStatsCommand) {
   const guardKey = `${message.id}:stats`;
   if (!markProcessed(guardKey)) return;
 
@@ -530,10 +570,16 @@ module.exports = {
   const targetRaw = tokens.join(' ').trim();
   let member = message.member;
 
-  if (targetRaw) {
+  // جديد: الأولوية للمنشن المباشر
+  const mentionedMember = message.mentions.members.first();
+  if (mentionedMember) {
+    member = mentionedMember;
+  } else if (targetRaw) {
     const fetchedMember = await fetchMember(message.guild, targetRaw);
     if (!fetchedMember) {
-      await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+      await sendNoPing(message.channel, {
+        embeds: [redPanel('لم أستطع العثور على العضو.')]
+      });
       return;
     }
     member = fetchedMember;
@@ -547,8 +593,13 @@ module.exports = {
   }
 
   const doc = await getOrCreate(message.guild.id, member.id);
-  const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
-  const totalUserXp = userXpDoc ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0) : 0;
+  const userXpDoc = await UserXP.findOne({
+    guildId: message.guild.id,
+    userId: member.id
+  });
+  const totalUserXp = userXpDoc
+    ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0)
+    : 0;
 
   const nextCfg = getNextLevelConfig(doc.level);
   const multiplier = getMultiplier(member);
@@ -558,14 +609,18 @@ module.exports = {
     .setColor(0xff0000)
     .setAuthor({
       name: `بطاقة الإداري - ${member.user.tag}`,
-      iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
+      iconURL:
+        member.displayAvatarURL({ size: 256 }) ||
+        message.guild.iconURL({ dynamic: true })
     })
     .addFields(
       { name: '👤 الإداري', value: `**<@${member.id}>**`, inline: true },
       {
         name: '🔢 المستوى الحالي',
         value: `**Level ${doc.level}**${
-          doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''
+          doc.promotedAt
+            ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>`
+            : ''
         }`,
         inline: true
       },
@@ -609,6 +664,17 @@ module.exports = {
   return;
 }
 
+if (isTasksCommand) {
+  const guardKey = `${message.id}:tasks`;
+  if (!markProcessed(guardKey)) return;
+
+  if (!hasSupportRole) return;
+  await sendNoPing(message.channel, {
+    embeds: [redPanel('أمر المهام سيتم تفعيله لاحقاً.')]
+  });
+  return;
+}
+    
 if (isTasksCommand) {
   const guardKey = `${message.id}:tasks`;
   if (!markProcessed(guardKey)) return;
