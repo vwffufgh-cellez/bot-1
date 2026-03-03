@@ -7,7 +7,8 @@ const {
   SUPPORT_ROLE_ID,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
   WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS,
-  PANEL_LINE_IMAGE_URL
+  PANEL_LINE_IMAGE_URL,
+  AUTO_PROMOTE_ON_DEMOTE
 } = require('../config/adminProgressConfig');
 
 const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
@@ -47,7 +48,7 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-function getMultiplier() {
+function getMultiplier(member) {
   return 1.0;
 }
 
@@ -162,7 +163,6 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {})
   let removedRoles = [];
 
   if (mode === 'demote' || mode === 'resync') {
-    // احذف أي رتبة أعلى من المستوى الحالي + رتب التحذير
     for (const cfg of LEVEL_CONFIGS) {
       if (cfg.level > toLevel) {
         for (const rid of cfg.roles || []) removeSet.add(String(rid));
@@ -205,7 +205,7 @@ async function tryPromote(_context, member, options = {}) {
   const guild = member.guild;
   const doc = await getOrCreate(guild.id, member.id);
 
-  // مزامنة المستوى حسب الرتب الموجودة (حل مشكلة يبدأ من 1 رغم معه رتبة أعلى)
+  // مزامنة المستوى حسب الرتب الحالية (حل مشكلة يبدأ من 1 رغم معه رتبة أعلى)
   await syncDocLevelWithMemberRoles(member, doc);
 
   const multiplier = getMultiplier(member);
@@ -352,6 +352,15 @@ async function demoteOneLevel(guild, member, options = {}) {
     toLevel,
     { mode: 'demote' }
   );
+
+  // إذا كان `AUTO_PROMOTE_ON_DEMOTE` مفعلًا، حاول ترقية الفرد
+  if (AUTO_PROMOTE_ON_DEMOTE) {
+    try {
+      await tryPromote(null, member, { announceInChannel: false, dmOnPromote: false });
+    } catch (err) {
+      console.error('Error auto-promoting after demote:', err);
+    }
+  }
 
   return {
     fromLevel,
