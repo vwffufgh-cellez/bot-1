@@ -143,15 +143,30 @@ function getHighestLevelFromMemberRoles(member) {
   return highest;
 }
 
-async function syncDocLevelWithMemberRoles(member, doc) {
-  const roleLevel = getHighestLevelFromMemberRoles(member);
-  if ((doc.level || 0) !== roleLevel) {
-    doc.level = roleLevel;
-    await doc.save();
-  }
-  return roleLevel;
-}
+function getHighestLevelFromMemberRoles(member) {
+  if (!member?.roles?.cache) return 0;
 
+  // roleId => أقل Level مرتبط بهذه الرتبة (حل مشكلة تكرار نفس الرتبة في مستويات متعددة)
+  const roleToBaseLevel = new Map();
+
+  for (const cfg of LEVEL_CONFIGS) {
+    for (const rid of cfg.roles || []) {
+      const roleId = String(rid);
+      if (!roleToBaseLevel.has(roleId) || cfg.level < roleToBaseLevel.get(roleId)) {
+        roleToBaseLevel.set(roleId, cfg.level);
+      }
+    }
+  }
+
+  let highest = 0;
+  for (const [roleId, baseLevel] of roleToBaseLevel.entries()) {
+    if (member.roles.cache.has(roleId) && baseLevel > highest) {
+      highest = baseLevel;
+    }
+  }
+
+  return highest;
+}
 async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {}) {
   const mode = options.mode || 'promote'; // promote | demote | resync
 
