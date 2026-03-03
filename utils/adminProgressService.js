@@ -1,3 +1,4 @@
+// utils/adminProgressService.js
 const { EmbedBuilder } = require('discord.js');
 const AdminProgress = require('../models/AdminProgress');
 const {
@@ -28,10 +29,19 @@ function ensureDocShape(doc) {
     changed = true;
   }
   for (const k of ['tickets', 'warns', 'xp']) {
-    if (typeof doc.points[k] !== 'number') { doc.points[k] = Number(doc.points[k] || 0); changed = true; }
-    if (typeof doc.lifetime[k] !== 'number') { doc.lifetime[k] = Number(doc.lifetime[k] || 0); changed = true; }
+    if (typeof doc.points[k] !== 'number') {
+      doc.points[k] = Number(doc.points[k] || 0);
+      changed = true;
+    }
+    if (typeof doc.lifetime[k] !== 'number') {
+      doc.lifetime[k] = Number(doc.lifetime[k] || 0);
+      changed = true;
+    }
   }
-  if (typeof doc.level !== 'number') { doc.level = Number(doc.level || 0); changed = true; }
+  if (typeof doc.level !== 'number') {
+    doc.level = Number(doc.level || 0);
+    changed = true;
+  }
   return changed;
 }
 
@@ -152,16 +162,16 @@ function roleMentions(roleIds = []) {
 }
 
 /**
- * FIX مهم:
- * إذا نفس role مكرر في أكثر من level (مثل SUPPORT_ROLE_ID في 5/6/7/8)
- * نعتمد أقل Level مربوط به كـ base level لهذه الرتبة، وليس أعلى واحد.
+ * مهم:
+ * لو نفس الـ role موجود في أكثر من مستوى (زي SUPPORT_ROLE_ID في 5/6/7/8)
+ * نعتمد أقل Level مربوط به كـ base level لهذه الرتبة.
  */
 function getHighestLevelFromMemberRoles(member) {
   if (!member?.roles?.cache) return 0;
 
   const roleToBaseLevel = new Map(); // roleId => min level
   for (const cfg of LEVEL_CONFIGS || []) {
-    for (const rid of (cfg.roles || [])) {
+    for (const rid of cfg.roles || []) {
       const id = String(rid);
       if (!roleToBaseLevel.has(id) || cfg.level < roleToBaseLevel.get(id)) {
         roleToBaseLevel.set(id, cfg.level);
@@ -199,7 +209,7 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {})
   if (mode === 'demote' || mode === 'resync') {
     for (const cfg of LEVEL_CONFIGS) {
       if (cfg.level > toLevel) {
-        for (const rid of (cfg.roles || [])) removeSet.add(String(rid));
+        for (const rid of cfg.roles || []) removeSet.add(String(rid));
       }
     }
   }
@@ -348,6 +358,7 @@ async function tryPromote(_context, member, options = {}) {
         );
       await member.send({ embeds: [dmEmbed] });
     } catch {}
+
   }
 
   return {
