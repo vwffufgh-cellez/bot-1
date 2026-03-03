@@ -56,7 +56,7 @@ module.exports = {
 
   ALIASES: {
     TASKS: ['المهام', 'مهام', 'tasks', 'task', 'مهمة'],
-    STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'], // تم تعديله للعمل في كل الحالات
+    STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'],
     CONVERT: ['تبديل', 'بدل', 'exchange', 'swap', 'switch', 'convert', 'تحويل_نوع'],
     TRANSFER: ['تحويل', 'حول', 'transfer', 'send', 'تحويل_نقاط'],
     EDIT: ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل']
