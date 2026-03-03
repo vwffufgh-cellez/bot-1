@@ -1,4 +1,3 @@
-// utils/adminProgressService.js
 const { EmbedBuilder } = require('discord.js');
 const AdminProgress = require('../models/AdminProgress');
 const {
@@ -18,12 +17,33 @@ const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
       .map(v => v.trim())
       .filter(Boolean);
 
+function ensureDocShape(doc) {
+  let changed = false;
+  if (!doc.points || typeof doc.points !== 'object') {
+    doc.points = { tickets: 0, warns: 0, xp: 0 };
+    changed = true;
+  }
+  if (!doc.lifetime || typeof doc.lifetime !== 'object') {
+    doc.lifetime = { tickets: 0, warns: 0, xp: 0 };
+    changed = true;
+  }
+  for (const k of ['tickets', 'warns', 'xp']) {
+    if (typeof doc.points[k] !== 'number') { doc.points[k] = Number(doc.points[k] || 0); changed = true; }
+    if (typeof doc.lifetime[k] !== 'number') { doc.lifetime[k] = Number(doc.lifetime[k] || 0); changed = true; }
+  }
+  if (typeof doc.level !== 'number') { doc.level = Number(doc.level || 0); changed = true; }
+  return changed;
+}
+
 async function getOrCreate(guildId, adminId) {
   let doc = await AdminProgress.findOne({ guildId, adminId });
   if (!doc) {
     doc = new AdminProgress({ guildId, adminId });
+    ensureDocShape(doc);
     await doc.save();
+    return doc;
   }
+  if (ensureDocShape(doc)) await doc.save();
   return doc;
 }
 
@@ -32,23 +52,23 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   const warnsAmount = warns || warnings || 0;
 
   if (xp) {
-    doc.points.xp = (doc.points.xp || 0) + xp;
-    doc.lifetime.xp = (doc.lifetime.xp || 0) + xp;
+    doc.points.xp += xp;
+    doc.lifetime.xp += xp;
   }
   if (tickets) {
-    doc.points.tickets = (doc.points.tickets || 0) + tickets;
-    doc.lifetime.tickets = (doc.lifetime.tickets || 0) + tickets;
+    doc.points.tickets += tickets;
+    doc.lifetime.tickets += tickets;
   }
   if (warnsAmount) {
-    doc.points.warns = (doc.points.warns || 0) + warnsAmount;
-    doc.lifetime.warns = (doc.lifetime.warns || 0) + warnsAmount;
+    doc.points.warns += warnsAmount;
+    doc.lifetime.warns += warnsAmount;
   }
 
   await doc.save();
   return doc;
 }
 
-function getMultiplier(member) {
+function getMultiplier(_member) {
   return 1.0;
 }
 
@@ -72,12 +92,12 @@ function normalizePointKey(key) {
 
   if (POINT_TYPE_ALIASES) {
     for (const [type, aliases] of Object.entries(POINT_TYPE_ALIASES)) {
-      if (aliases.map(a => a.toLowerCase()).includes(lower)) return type;
+      if ((aliases || []).map(a => a.toLowerCase()).includes(lower)) return type;
     }
   }
 
   if (['tickets', 'ticket', 'تكت', 'تذاكر', 'تكتات'].includes(lower)) return 'tickets';
-  if (['warns', 'warnings', 'تحذير', 'تحذيرات', 'تحدير'].includes(lower)) return 'warns';
+  if (['warns', 'warnings', 'تحذير', 'تحذيرات', 'تحدير', 'اتحدير'].includes(lower)) return 'warns';
   if (['xp', 'خبرة', 'اكسبي'].includes(lower)) return 'xp';
 
   return null;
@@ -131,56 +151,55 @@ function roleMentions(roleIds = []) {
   return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-function getHighestLevelFromMemberRoles(member) {
-  if (!member?.roles?.cache) return 0;
-  let highest = 0;
-  for (const cfg of LEVEL_CONFIGS) {
-    const roles = Array.isArray(cfg.roles) ? cfg.roles : [];
-    if (roles.some(rid => member.roles.cache.has(String(rid)))) {
-      if (cfg.level > highest) highest = cfg.level;
-    }
-  }
-  return highest;
-}
-
+/**
+ * FIX مهم:
+ * إذا نفس role مكرر في أكثر من level (مثل SUPPORT_ROLE_ID في 5/6/7/8)
+ * نعتمد أقل Level مربوط به كـ base level لهذه الرتبة، وليس أعلى واحد.
+ */
 function getHighestLevelFromMemberRoles(member) {
   if (!member?.roles?.cache) return 0;
 
-  // roleId => أقل Level مرتبط بهذه الرتبة (حل مشكلة تكرار نفس الرتبة في مستويات متعددة)
-  const roleToBaseLevel = new Map();
-
-  for (const cfg of LEVEL_CONFIGS) {
-    for (const rid of cfg.roles || []) {
-      const roleId = String(rid);
-      if (!roleToBaseLevel.has(roleId) || cfg.level < roleToBaseLevel.get(roleId)) {
-        roleToBaseLevel.set(roleId, cfg.level);
+  const roleToBaseLevel = new Map(); // roleId => min level
+  for (const cfg of LEVEL_CONFIGS || []) {
+    for (const rid of (cfg.roles || [])) {
+      const id = String(rid);
+      if (!roleToBaseLevel.has(id) || cfg.level < roleToBaseLevel.get(id)) {
+        roleToBaseLevel.set(id, cfg.level);
       }
     }
   }
 
   let highest = 0;
-  for (const [roleId, baseLevel] of roleToBaseLevel.entries()) {
-    if (member.roles.cache.has(roleId) && baseLevel > highest) {
-      highest = baseLevel;
-    }
+  for (const [roleId, level] of roleToBaseLevel.entries()) {
+    if (member.roles.cache.has(roleId) && level > highest) highest = level;
   }
 
   return highest;
 }
+
+async function syncDocLevelWithMemberRoles(member, doc) {
+  const roleLevel = getHighestLevelFromMemberRoles(member);
+  if ((doc.level || 0) !== roleLevel) {
+    doc.level = roleLevel;
+    await doc.save();
+  }
+  return roleLevel;
+}
+
 async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {}) {
   const mode = options.mode || 'promote'; // promote | demote | resync
 
   const toCfg = LEVEL_CONFIGS.find(cfg => cfg.level === toLevel) || { roles: [] };
   const toRoles = Array.isArray(toCfg.roles) ? toCfg.roles.map(String) : [];
 
-  let removeSet = new Set(WARNING_ROLE_IDS.map(String));
-  let addedRoles = [];
-  let removedRoles = [];
+  const removeSet = new Set(WARNING_ROLE_IDS.map(String));
+  const addedRoles = [];
+  const removedRoles = [];
 
   if (mode === 'demote' || mode === 'resync') {
     for (const cfg of LEVEL_CONFIGS) {
       if (cfg.level > toLevel) {
-        for (const rid of cfg.roles || []) removeSet.add(String(rid));
+        for (const rid of (cfg.roles || [])) removeSet.add(String(rid));
       }
     }
   }
@@ -216,12 +235,14 @@ async function tryPromote(_context, member, options = {}) {
 
   const announceInChannel = options.announceInChannel ?? true;
   const dmOnPromote = options.dmOnPromote ?? true;
+  const skipRoleSync = options.skipRoleSync ?? false;
 
   const guild = member.guild;
   const doc = await getOrCreate(guild.id, member.id);
 
-  // مزامنة المستوى حسب الرتب الحالية (حل مشكلة يبدأ من 1 رغم معه رتبة أعلى)
-  await syncDocLevelWithMemberRoles(member, doc);
+  if (!skipRoleSync) {
+    await syncDocLevelWithMemberRoles(member, doc);
+  }
 
   const multiplier = getMultiplier(member);
   const startingLevel = doc.level;
@@ -242,9 +263,9 @@ async function tryPromote(_context, member, options = {}) {
 
     if (!canPromote) break;
 
-    doc.points.tickets = (doc.points.tickets || 0) - (nextReq.tickets || 0);
-    doc.points.warns = (doc.points.warns || 0) - (nextReq.warns || 0);
-    doc.points.xp = (doc.points.xp || 0) - (nextReq.xp || 0);
+    doc.points.tickets -= nextReq.tickets || 0;
+    doc.points.warns -= nextReq.warns || 0;
+    doc.points.xp -= nextReq.xp || 0;
 
     consumed.tickets += nextReq.tickets || 0;
     consumed.warns += nextReq.warns || 0;
@@ -259,7 +280,6 @@ async function tryPromote(_context, member, options = {}) {
 
   await doc.save();
 
-  // وقت الترقية: لا نحذف الرتب السابقة، نحذف فقط رتب التحذير
   const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
     member,
     startingLevel,
@@ -326,7 +346,6 @@ async function tryPromote(_context, member, options = {}) {
             `**إلى:** ${newLevelName}`
           ].join('\n')
         );
-
       await member.send({ embeds: [dmEmbed] });
     } catch {}
   }
@@ -342,6 +361,10 @@ async function tryPromote(_context, member, options = {}) {
   };
 }
 
+async function forcePromote(context, member, options = {}) {
+  return tryPromote(context, member, { ...options, skipRoleSync: true });
+}
+
 async function demoteOneLevel(guild, member, options = {}) {
   const reason = String(options.reason || '').trim();
   if (!reason) throw new Error('لا يمكن تنفيذ كسر بدون سبب.');
@@ -349,9 +372,7 @@ async function demoteOneLevel(guild, member, options = {}) {
   const doc = await getOrCreate(guild.id, member.id);
   await syncDocLevelWithMemberRoles(member, doc);
 
-  if (!doc || (doc.level ?? 0) <= 0) {
-    throw new Error('هذا العضو في أقل مستوى بالفعل.');
-  }
+  if ((doc.level ?? 0) <= 0) throw new Error('هذا العضو في أقل مستوى بالفعل.');
 
   const fromLevel = doc.level;
   const toLevel = fromLevel - 1;
@@ -360,7 +381,6 @@ async function demoteOneLevel(guild, member, options = {}) {
   doc.promotedAt = new Date();
   await doc.save();
 
-  // وقت الكسر: احذف الرتب الأعلى + رتب التحذير، وأضف رتبة المستوى الجديد
   const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
     member,
     fromLevel,
@@ -368,10 +388,9 @@ async function demoteOneLevel(guild, member, options = {}) {
     { mode: 'demote' }
   );
 
-  // إذا كان `AUTO_PROMOTE_ON_DEMOTE` مفعلًا، حاول ترقية الفرد
   if (AUTO_PROMOTE_ON_DEMOTE) {
     try {
-      await tryPromote(null, member, { announceInChannel: false, dmOnPromote: false });
+      await tryPromote(null, member, { announceInChannel: false, dmOnPromote: false, skipRoleSync: true });
     } catch (err) {
       console.error('Error auto-promoting after demote:', err);
     }
@@ -392,6 +411,7 @@ module.exports = {
   getOrCreate,
   addPoints,
   tryPromote,
+  forcePromote,
   demoteOneLevel,
   getMultiplier,
   getNextLevelConfig,
