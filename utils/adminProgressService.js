@@ -7,8 +7,7 @@ const {
   SUPPORT_ROLE_ID,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
   WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS,
-  ADMIN_WARN_TIERS = [],
-  POINT_VALUE = {}
+  PROMOTION_LOG_CHANNEL_ID
 } = require('../config/adminProgressConfig');
 
 const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
@@ -17,6 +16,10 @@ const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
       .split(',')
       .map(v => v.trim())
       .filter(Boolean);
+
+const ADMIN_RANK_ROLE_ID = '1445473082180501655';
+const WARN_RANK_ROLE_ID = '1478329249550041140';
+const KASAR_CHANNEL_ID = '1463932101496799252';
 
 async function getOrCreate(guildId, adminId) {
   let doc = await AdminProgress.findOne({ guildId, adminId });
@@ -48,25 +51,8 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-/**
- * يأخذ أعلى مضاعف من رتب التحذير فقط (بدون stacking).
- * مثال: إذا معه تحذير1 و2 و3 => يأخذ 2.1 فقط.
- */
-function getMultiplier(member) {
-  if (!member?.roles?.cache) return 1.0;
-  if (!Array.isArray(ADMIN_WARN_TIERS) || !ADMIN_WARN_TIERS.length) return 1.0;
-
-  let max = 1.0;
-  for (const tier of ADMIN_WARN_TIERS) {
-    const roleId = String(tier?.roleId || '');
-    const multiplier = Number(tier?.multiplier || 1);
-
-    if (!roleId || !Number.isFinite(multiplier) || multiplier <= 0) continue;
-    if (member.roles.cache.has(roleId) && multiplier > max) {
-      max = multiplier;
-    }
-  }
-  return max;
+function getMultiplier() {
+  return 1.0;
 }
 
 function getNextLevelConfig(currentLevel) {
@@ -100,19 +86,6 @@ function normalizePointKey(key) {
   return null;
 }
 
-function pointValueByKey(key) {
-  if (key === 'tickets') return Number(POINT_VALUE.ticket || 300);
-  if (key === 'warns') return Number(POINT_VALUE.warn || 150);
-  if (key === 'xp') return Number(POINT_VALUE.xp || 1);
-  return NaN;
-}
-
-/**
- * تحويل بالنِّسَب الصحيحة:
- * 1 ticket = 300 xp
- * 1 warn = 150 xp
- * 1 ticket = 2 warns
- */
 async function convertPoints(doc, fromType, amount, toType) {
   const fromKey = normalizePointKey(fromType);
   const toKey = normalizePointKey(toType);
@@ -128,24 +101,11 @@ async function convertPoints(doc, fromType, amount, toType) {
 
   if (doc.points[fromKey] < amt) throw new Error('لا تملك نقاط كافية للتبديل.');
 
-  const fromValue = pointValueByKey(fromKey);
-  const toValue = pointValueByKey(toKey);
-
-  if (!Number.isFinite(fromValue) || !Number.isFinite(toValue) || fromValue <= 0 || toValue <= 0) {
-    throw new Error('قيمة التحويل غير صحيحة في الإعدادات.');
-  }
-
-  const base = amt * fromValue;
-  const outRaw = base / toValue;
-  const out = Math.floor(outRaw); // نقاط صحيحة
-
-  if (out <= 0) throw new Error('الكمية الناتجة أقل من الحد الأدنى للتحويل.');
-
   doc.points[fromKey] -= amt;
-  doc.points[toKey] += out;
+  doc.points[toKey] += amt;
 
   await doc.save();
-  return { fromKey, toKey, amountIn: amt, amountOut: out };
+  return { fromKey, toKey, amountIn: amt, amountOut: amt };
 }
 
 async function transferPoints(fromDoc, toDoc, typeArg, amount) {
@@ -174,29 +134,45 @@ function roleMentions(roleIds = []) {
   return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-async function syncMemberRolesForLevel(member, fromLevel, toLevel) {
-  const fromCfg = LEVEL_CONFIGS.find(cfg => cfg.level === fromLevel) || { roles: [] };
-  const toCfg = LEVEL_CONFIGS.find(cfg => cfg.level === toLevel) || { roles: [] };
+function getMemberHighestAdminLevel(member) {
+  const adminRoles = LEVEL_CONFIGS
+    .filter(cfg => cfg.roles && cfg.roles.some(roleId => member.roles.cache.has(roleId)))
+    .sort((a, b) => b.level - a.level);
+  return adminRoles.length > 0 ? adminRoles[0] : null;
+}
 
-  const fromRoles = Array.isArray(fromCfg.roles) ? fromCfg.roles : [];
-  const toRoles = Array.isArray(toCfg.roles) ? toCfg.roles : [];
+async function syncMemberRolesForLevel(member, targetLevel) {
+  // الحصول على أعلى رتبة إدارية للعضو
+  const highestAdminLevelConfig = getMemberHighestAdminLevel(member);
+  const startLevel = highestAdminLevelConfig ? highestAdminLevelConfig.level : 0;
+  
+  const targetCfg = LEVEL_CONFIGS.find(cfg => cfg.level === targetLevel) || { roles: [] };
+  
+  // حساب المستوى الفعلي (يبدأ من أعلى رتبة موجودة)
+  const actualTargetLevel = Math.max(targetLevel, startLevel);
+  const actualTargetCfg = LEVEL_CONFIGS.find(cfg => cfg.level === actualTargetLevel) || targetCfg;
 
-  const removeSet = [...new Set([...fromRoles, ...WARNING_ROLE_IDS])];
+  const allAdminRoles = LEVEL_CONFIGS.flatMap(cfg => cfg.roles || []);
+  const removeSet = [...new Set([...allAdminRoles, ...WARNING_ROLE_IDS])];
   const removedRoles = [];
   const addedRoles = [];
 
+  // إزالة رتب التحذير فقط + رتب المستويات الأقل من الهدف
   for (const roleId of removeSet) {
-    try {
-      if (member.roles.cache.has(roleId)) {
-        await member.roles.remove(roleId);
-        removedRoles.push(roleId);
+    if (WARNING_ROLE_IDS.includes(roleId)) {
+      try {
+        if (member.roles.cache.has(roleId)) {
+          await member.roles.remove(roleId);
+          removedRoles.push(roleId);
+        }
+      } catch (err) {
+        console.error('Error removing warning role:', err);
       }
-    } catch (err) {
-      console.error('Error removing role:', err);
     }
   }
 
-  for (const roleId of toRoles) {
+  // إضافة رتب المستوى المستهدف
+  for (const roleId of actualTargetCfg.roles || []) {
     try {
       if (!member.roles.cache.has(roleId)) {
         await member.roles.add(roleId);
@@ -207,7 +183,14 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel) {
     }
   }
 
-  return { removedRoles, addedRoles, fromCfg, toCfg };
+  return { 
+    removedRoles, 
+    addedRoles, 
+    fromLevel: startLevel, 
+    toLevel: actualTargetLevel,
+    fromCfg: highestAdminLevelConfig || { roles: [] },
+    toCfg: actualTargetCfg 
+  };
 }
 
 async function tryPromote(message, member, options = {}) {
@@ -257,7 +240,6 @@ async function tryPromote(message, member, options = {}) {
 
   const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
     member,
-    startingLevel,
     doc.level
   );
 
@@ -287,7 +269,8 @@ async function tryPromote(message, member, options = {}) {
     .setFooter({
       text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
       iconURL: member.displayAvatarURL({ size: 128 })
-    });
+    })
+    .setImage('https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a7cbb2&is=69a67a32&hm=67f646fb38d7285be13cfecf4e122ca1a68310158c0de7168228fc7710575c68');
 
   if (announceInChannel) {
     const announceChannel = guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
@@ -347,21 +330,53 @@ async function demoteOneLevel(guild, member, options = {}) {
   const fromLevel = doc.level;
   const toLevel = fromLevel - 1;
 
-  doc.level = toLevel;
+  doc.level = Math.max(toLevel, 0);
   doc.promotedAt = new Date();
   await doc.save();
 
   const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
     member,
-    fromLevel,
-    toLevel
+    doc.level
   );
+
+  // إرسال بنل في قناة الكسر
+  const kasarChannel = guild.channels.cache.get(KASAR_CHANNEL_ID);
+  if (kasarChannel) {
+    try {
+      const kasarEmbed = new EmbedBuilder()
+        .setColor(0xff0000)
+        .setTitle('⬇️ كسر رتبة إداري')
+        .setDescription(
+          [
+            `<@&${ADMIN_RANK_ROLE_ID}>`,
+            '',
+            `**الإداري:** <@${member.id}>`,
+            `**من مستوى:** ${fromLevel}`,
+            `**إلى مستوى:** ${doc.level}`,
+            `**الرتبة السابقة:** ${fromCfg?.name || `Level ${fromLevel}`}`,
+            `**الرتبة الجديدة:** ${toCfg?.name || `Level ${doc.level}`}`,
+            `**السبب:** ${reason}`,
+            '',
+            `**الرتب المحذوفة:** ${roleMentions(removedRoles)}`,
+            `**الرتب المضافة:** ${roleMentions(addedRoles)}`
+          ].join('\n')
+        )
+        .setFooter({
+          text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
+          iconURL: member.displayAvatarURL({ size: 128 })
+        });
+
+      await kasarChannel.send({ embeds: [kasarEmbed] });
+    } catch (err) {
+      console.error('Error sending demotion announcement:', err);
+    }
+  }
 
   return {
     fromLevel,
-    toLevel,
+    toLevel: doc.level,
     fromName: fromCfg?.name || `Level ${fromLevel}`,
-    toName: toCfg?.name || `Level ${toLevel}`,
+    toName: toCfg?.name || `Level ${doc.level}`,
     removedRoles,
     addedRoles,
     reason
