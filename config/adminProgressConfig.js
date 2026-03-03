@@ -1,9 +1,8 @@
 // config/adminProgressConfig.js
-
 const SUPPORT_ROLE_ID = '1445473101629493383';
-const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473082180501655'; // الرتبة المسموح لها بكسر/تعديل
-const WARN_ALLOWED_ROLE_ID = '1478329249550041140'; // الرتبة المسموح لها بالتحذير
-const WARN_COMMAND_CHANNEL_IDS = ['1463931942058852399']; // نفس شات التحذير فقط
+const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473082180501655'; 
+const WARN_ALLOWED_ROLE_ID = '1478329249550041140';
+const WARN_COMMAND_CHANNEL_IDS = ['1463931942058852399'];
 const PROMOTION_ANNOUNCE_CHANNEL_ID = '1463932101496799252';
 const PANEL_LINE_IMAGE_URL =
   'https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a7cbb2&is=69a67a32&hm=67f646fb38d7285be13cfecf4e122ca1a68310158c0de7168228fc7710575c68';
@@ -19,7 +18,6 @@ const ADMIN_LEVELS = [
   { level: 8, roleId: SUPPORT_ROLE_ID, name: 'إداري 8', req: { tickets: 50, warns: 50, xp: 11000 } }
 ];
 
-// نسخة متوافقة مع الأكواد التي تعتمد LEVEL_CONFIGS (roles[])
 const LEVEL_CONFIGS = ADMIN_LEVELS.map(lvl => ({
   level: lvl.level,
   name: lvl.name,
@@ -58,7 +56,7 @@ module.exports = {
 
   ALIASES: {
     TASKS: ['المهام', 'مهام', 'tasks', 'task', 'مهمة'],
-    STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'],
+    STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'], // تم تعديله للعمل في كل الحالات
     CONVERT: ['تبديل', 'بدل', 'exchange', 'swap', 'switch', 'convert', 'تحويل_نوع'],
     TRANSFER: ['تحويل', 'حول', 'transfer', 'send', 'تحويل_نقاط'],
     EDIT: ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل']
@@ -68,5 +66,7 @@ module.exports = {
     tickets: ['تكت', 'تذاكر', 'تكتات', 'تذكرة', 'ticket', 'tickets', 'tkt'],
     warns: ['تحذير', 'تحذيرات', 'تحدير', 'تحديرات', 'تحذيراتك', 'warn', 'warns', 'warning', 'warnings'],
     xp: ['اكسبي', 'xp', 'خبرة', 'خبره', 'اكس_بي', 'exp', 'experience']
-  }
+  },
+
+  AUTO_PROMOTE_ON_DEMOTE: true // تفعيل الترقية التلقائية بعد الكسر
 };
