@@ -3,7 +3,7 @@ const { EmbedBuilder } = require('discord.js');
 const TicketClaim = require('../models/TicketClaim');
 const { addPoints, tryPromote } = require('../utils/adminProgressService');
 
-const SUPPORT_ROLE_ID = '1445473101629493383';
+const ADMIN_RANK_ROLE_ID = '1445473082180501655';
 
 function redPanel(text) {
   return new EmbedBuilder()
@@ -17,7 +17,7 @@ module.exports = {
     if (!interaction.isButton()) return;
     if (interaction.customId !== 'confirm_claim') return;
 
-    if (!interaction.member.roles.cache.has(SUPPORT_ROLE_ID)) {
+    if (!interaction.member.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
       return interaction.reply({
         embeds: [redPanel('هذا الزر مخصص لفريق الدعم فقط.')],
         ephemeral: true
