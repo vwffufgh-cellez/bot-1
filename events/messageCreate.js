@@ -29,6 +29,13 @@ const {
   syncDocLevelWithMemberRoles
 } = require('../utils/adminProgressService');
 
+// استيراد خدمة البطاقة الإدارية
+const {
+  hasAdminRole,
+  upsertAdminProfile,
+  findAdminProfileByText
+} = require('../utils/adminProfileService');
+
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
 
@@ -47,7 +54,7 @@ const BREAK_ALIASES = ['كسر', 'break', 'demote', 'down'];
 
 const STATS_ALIASES = Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
   ? ALIASES.STATS
-  : ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'];
+  : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
 
 // أمر التعديل
 const EDIT_ALIASES = ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل'];
@@ -223,16 +230,9 @@ function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
   return false;
 }
 
+// استخدام hasAdminRole من خدمة AdminProfile
 function isAdminMember(member) {
-  if (!member?.roles?.cache) return false;
-  const adminRoles = new Set([String(SUPPORT_ROLE_ID)]);
-  for (const cfg of LEVEL_CONFIGS) {
-    for (const r of cfg.roles || []) adminRoles.add(String(r));
-  }
-  for (const roleId of adminRoles) {
-    if (member.roles.cache.has(roleId)) return true;
-  }
-  return false;
+  return hasAdminRole(member);
 }
 
 function isWarnChannel(channelId) {
@@ -539,7 +539,7 @@ module.exports = {
       if (isDuplicateCommand(message)) return;
 
       const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
-      const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+      const hasSupportRoleFlag = message.member.roles.cache.has(SUPPORT_ROLE_ID);
       const canEditBreak = message.member.roles.cache.has(EDIT_BREAK_ALLOWED_ROLE_ID);
       const canWarnRole = message.member.roles.cache.has(WARN_ALLOWED_ROLE_ID);
       const inWarnChannel = isWarnChannel(message.channel.id);
@@ -599,14 +599,17 @@ module.exports = {
         return;
       }
 
+      // أمر STATS بعد دمج AdminProfile
       if (isStatsCommand) {
         const guardKey = `${message.id}:stats`;
         if (!markProcessed(guardKey)) return;
 
         try {
           let targetRaw = tokens.join(' ').trim();
-          let member = message.member;
-          let targetUser = message.author;
+
+          let member = null;
+          let targetUser = null;
+          let targetId = null;
 
           // دعم صيغ: "ستات ايدي 123" أو "stats id 123"
           const lowerFirst = (tokens[0] || '').toLowerCase();
@@ -615,33 +618,57 @@ module.exports = {
           }
 
           if (targetRaw) {
-            const fetchedMember = await fetchMember(message.guild, targetRaw);
+            // 1) نحاول كعضو في السيرفر
+            member = await fetchMember(message.guild, targetRaw);
 
-            if (fetchedMember) {
-              member = fetchedMember;
-              targetUser = fetchedMember.user;
+            if (member) {
+              targetId = member.id;
+              targetUser = member.user;
+              // نحدث البطاقة في كل مرة نقدر
+              await upsertAdminProfile(member);
             } else {
+              // 2) لو نص ممكن يكون ID/منشن
               const idOnly = extractIdFromMention(targetRaw);
-              if (!idOnly) {
-                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. تأكد من المنشن أو الـ ID.')] });
-                return;
+              if (idOnly) {
+                targetId = idOnly;
+                try {
+                  targetUser = await message.client.users.fetch(idOnly, { force: true });
+                } catch {
+                  // نكمل لمحاولة البحث في AdminProfile
+                }
               }
 
-              try {
-                targetUser = await message.client.users.fetch(idOnly, { force: true });
-              } catch {
-                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-                return;
+              // 3) بحث مرن في AdminProfile بالاسم/النك/التاق
+              if (!targetId || !targetUser) {
+                const profile = await findAdminProfileByText(message.guild.id, targetRaw);
+                if (profile) {
+                  targetId = profile.userId;
+                  try {
+                    targetUser = await message.client.users.fetch(profile.userId, { force: true });
+                  } catch {
+                    // مو ضروري إذا ما قدر يجيب avatar، نكمل بالإحصائيات فقط
+                  }
+                }
               }
 
-              member = null;
+              if (!targetId) {
+                await sendNoPing(message.channel, {
+                  embeds: [redPanel('لم أستطع العثور على العضو. تأكد من الاسم أو المنشن أو الـ ID.')]
+                });
+                return;
+              }
             }
+          } else {
+            // بدون هدف = لنفس الشخص
+            member = message.member;
+            targetUser = message.author;
+            targetId = message.author.id;
+            await upsertAdminProfile(message.member);
           }
 
-          const targetId = member?.id || targetUser.id;
           const doc = await getOrCreate(message.guild.id, targetId);
 
-          // مهم: إذا متاح كـ GuildMember نسوي مزامنة المستوى من الرتب الحالية
+          // مهم: إذا العضو موجود داخل السيرفر، نزامن المستوى مع رتبته الحالية
           if (member) {
             await syncDocLevelWithMemberRoles(member, doc);
           }
@@ -658,7 +685,9 @@ module.exports = {
           };
 
           const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: targetId });
-          const totalUserXp = userXpDoc ? Number(userXpDoc.textXp || 0) + Number(userXpDoc.voiceXp || 0) : 0;
+          const totalUserXp = userXpDoc
+            ? Number(userXpDoc.textXp || 0) + Number(userXpDoc.voiceXp || 0)
+            : 0;
 
           const levelNow = Number(doc.level || 0);
           const nextCfg = getNextLevelConfig(levelNow);
@@ -670,10 +699,16 @@ module.exports = {
             (targetUser?.displayAvatarURL?.({ size: 256 })) ||
             message.guild.iconURL({ size: 256 });
 
+          const displayTag =
+            targetUser?.tag ||
+            (member?.user?.tag) ||
+            (message.guild.members.cache.get(targetId)?.user?.tag) ||
+            `ID: ${targetId}`;
+
           const embed = new EmbedBuilder()
             .setColor(0xff0000)
             .setAuthor({
-              name: `بطاقة الإحصائيات - ${targetUser.tag}`,
+              name: `بطاقة الإحصائيات - ${displayTag}`,
               iconURL: avatar || undefined
             })
             .addFields(
@@ -681,7 +716,9 @@ module.exports = {
               {
                 name: '🔢 المستوى الحالي (حسب الرتبة)',
                 value: `**Level ${levelNow}**${
-                  doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(new Date(doc.promotedAt).getTime() / 1000)}:R>` : ''
+                  doc.promotedAt
+                    ? `\nآخر ترقية: <t:${Math.floor(new Date(doc.promotedAt).getTime() / 1000)}:R>`
+                    : ''
                 }`,
                 inline: true
               },
@@ -818,7 +855,7 @@ module.exports = {
       if (isConvertCommand) {
         const guardKey = `${message.id}:convert`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRole) return;
+        if (!hasSupportRoleFlag) return;
 
         let amountRaw, fromType, toType;
         if (tokens.length >= 3) {
@@ -868,7 +905,7 @@ module.exports = {
       if (isTransferCommand) {
         const guardKey = `${message.id}:transfer`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRole) return;
+        if (!hasSupportRoleFlag) return;
 
         if (tokens.length < 3) {
           await sendNoPing(message.channel, {
@@ -1062,7 +1099,7 @@ module.exports = {
           });
           return;
         }
-        if (!hasSupportRole) return;
+        if (!hasSupportRoleFlag) return;
 
         let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (ticketClaim) return;
@@ -1103,13 +1140,13 @@ module.exports = {
         if (!markProcessed(guardKey, COOLDOWN)) return;
 
         if (!isTicketChannel) return;
-        if (!hasSupportRole) return;
+        if (!hasSupportRoleFlag) return;
 
         const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (!ticketClaim) return;
         if (ticketClaim.claimedById !== message.author.id) return;
 
-        await TicketClaim.deleteOne({ channelId: message.channel.id });
+        await TicketClaim.deleteOne({ channelId: message.id });
         await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
           embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
         });
