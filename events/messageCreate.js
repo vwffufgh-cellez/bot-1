@@ -13,8 +13,7 @@ const {
   WARN_COMMAND_CHANNEL_IDS,
   PANEL_LINE_IMAGE_URL,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
-  LEVEL_CONFIGS,
-  AUTO_PROMOTE_ON_DEMOTE
+  LEVEL_CONFIGS
 } = require('../config/adminProgressConfig');
 const {
   getOrCreate,
@@ -45,6 +44,10 @@ const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
 const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_ALIASES = ['t', 'top', 'توب'];
 const BREAK_ALIASES = ['كسر', 'break', 'demote', 'down'];
+
+const STATS_ALIASES = Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
+  ? ALIASES.STATS
+  : ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'];
 
 // أمر التعديل
 const EDIT_ALIASES = ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل'];
@@ -160,9 +163,9 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
 
 const extractIdFromMention = arg => {
   if (!arg) return null;
-  const match = arg.match(/^<@!?(\d+)>$/);
+  const match = String(arg).match(/^<@!?(\d+)>$/);
   if (match) return match[1];
-  if (/^\d{15,21}$/.test(arg)) return arg;
+  if (/^\d{15,21}$/.test(String(arg))) return String(arg);
   return null;
 };
 
@@ -480,697 +483,758 @@ function formatProgress(current, required) {
 module.exports = {
   name: Events.MessageCreate,
   async execute(message) {
-    if (!message.guild || message.author.bot) return;
-    if (!lockMessage(message.id)) return;
+    try {
+      if (!message.guild || message.author.bot) return;
+      if (!lockMessage(message.id)) return;
 
-    if (typeof resetIfNeeded === 'function') {
-      try {
-        await resetIfNeeded(message.guild.id);
-      } catch {}
-    }
+      if (typeof resetIfNeeded === 'function') {
+        try {
+          await resetIfNeeded(message.guild.id);
+        } catch {}
+      }
 
-    if (message.content.trim().length > 0 || message.attachments.size > 0) {
-      await grantTextXp(message);
-    }
+      if (message.content.trim().length > 0 || message.attachments.size > 0) {
+        await grantTextXp(message);
+      }
 
-    const content = message.content.trim();
-    if (!content.length) return;
+      const content = message.content.trim();
+      if (!content.length) return;
 
-    const tokens = content.split(/\s+/);
-    const command = tokens.shift().toLowerCase();
+      const tokens = content.split(/\s+/);
+      let command = (tokens.shift() || '').trim();
+      command = command.replace(/^[!?.]+/, '').toLowerCase(); // يدعم !stats أو stats
 
-    const isWarnCommand = WARN_ALIASES.includes(command);
-    const isWarningsCommand = WARNINGS_ALIASES.includes(command);
-    const isClaimCommand = CLAIM_ALIASES.includes(command);
-    const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
-    const isXpCommand = XP_ALIASES.includes(command);
-    const isTopCommand = TOP_ALIASES.includes(command);
-    const isTasksCommand = ALIASES.TASKS.includes(command);
-    const isStatsCommand = ALIASES.STATS.includes(command); // تم تعديله ليكون عامًا
-    const isConvertCommand = ALIASES.CONVERT.includes(command);
-    const isTransferCommand = ALIASES.TRANSFER.includes(command);
-    const isEditCommand = EDIT_ALIASES.includes(command);
-    const isBreakCommand = BREAK_ALIASES.includes(command);
+      const isWarnCommand = WARN_ALIASES.includes(command);
+      const isWarningsCommand = WARNINGS_ALIASES.includes(command);
+      const isClaimCommand = CLAIM_ALIASES.includes(command);
+      const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
+      const isXpCommand = XP_ALIASES.includes(command);
+      const isTopCommand = TOP_ALIASES.includes(command);
+      const isTasksCommand = ALIASES.TASKS.includes(command);
+      const isStatsCommand = STATS_ALIASES.includes(command);
+      const isConvertCommand = ALIASES.CONVERT.includes(command);
+      const isTransferCommand = ALIASES.TRANSFER.includes(command);
+      const isEditCommand = EDIT_ALIASES.includes(command);
+      const isBreakCommand = BREAK_ALIASES.includes(command);
 
-    if (
-      !(
-        isWarnCommand ||
-        isWarningsCommand ||
-        isClaimCommand ||
-        isUnclaimCommand ||
-        isXpCommand ||
-        isTopCommand ||
-        isTasksCommand ||
-        isStatsCommand ||
-        isConvertCommand ||
-        isTransferCommand ||
-        isEditCommand ||
-        isBreakCommand
-      )
-    ) {
-      return;
-    }
-
-    if (isDuplicateCommand(message)) return;
-
-    const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
-    const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
-    const canEditBreak = message.member.roles.cache.has(EDIT_BREAK_ALLOWED_ROLE_ID);
-    const canWarnRole = message.member.roles.cache.has(WARN_ALLOWED_ROLE_ID);
-    const inWarnChannel = isWarnChannel(message.channel.id);
-
-    if (isTasksCommand) {
-      const guardKey = `${message.id}:tasks`;
-      if (!markProcessed(guardKey)) return;
-
-      // فقط الإداريين + فقط شات التحذير
-      if (!isAdminMember(message.member)) return;
-
-      // مزامنة المستوى حسب الرتب الحالية + محاولة ترقية فورية لو مكتمل
-      const myDoc = await getOrCreate(message.guild.id, message.member.id);
-      await syncDocLevelWithMemberRoles(message.member, myDoc);
-      await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
-
-      const doc = await getOrCreate(message.guild.id, message.member.id);
-      const multiplier = getMultiplier(message.member);
-      const nextCfg = getNextLevelConfig(doc.level);
-      const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setTitle('📌 حالة المهام')
-        .setDescription(`**الإداري:** <@${message.member.id}>`)
-        .addFields(
-          { name: '🔢 مستواك الحالي', value: `**Level ${doc.level}**`, inline: true },
-          { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-          {
-            name: '📦 نقاطك الحالية',
-            value: `🎟️ ${doc.points.tickets}\n⚠️ ${doc.points.warns}\n✨ ${doc.points.xp}`,
-            inline: false
-          }
+      if (
+        !(
+          isWarnCommand ||
+          isWarningsCommand ||
+          isClaimCommand ||
+          isUnclaimCommand ||
+          isXpCommand ||
+          isTopCommand ||
+          isTasksCommand ||
+          isStatsCommand ||
+          isConvertCommand ||
+          isTransferCommand ||
+          isEditCommand ||
+          isBreakCommand
         )
-        .setFooter({
-          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
-
-      if (nextReq) {
-        embed.addFields({
-          name: `🚀 المطلوب للترقية التالية (${nextCfg?.name || `Level ${doc.level + 1}`})`,
-          value: [
-            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-          ].join('\n'),
-          inline: false
-        });
-      } else {
-        embed.addFields({
-          name: '🚀 الترقية التالية',
-          value: '**أنت في أعلى مستوى متاح حالياً.**',
-          inline: false
-        });
-      }
-
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
-    }
-
-if (isStatsCommand) {
-  const guardKey = `${message.id}:stats`;
-  if (!markProcessed(guardKey)) return;
-
-  try {
-    const targetRaw = tokens.join(' ').trim();
-    let member = message.member;
-
-    if (targetRaw) {
-      const fetchedMember = await fetchMember(message.guild, targetRaw);
-      if (!fetchedMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. تأكد من المنشن أو الـ ID.')] });
-        return;
-      }
-      member = fetchedMember;
-    }
-
-    const doc = await getOrCreate(message.guild.id, member.id);
-    await syncDocLevelWithMemberRoles(member, doc); // مهم جدًا: المستوى = حسب الرتب الحالية
-
-    const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
-    const totalUserXp = userXpDoc ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0) : 0;
-
-    const nextCfg = getNextLevelConfig(doc.level);
-    const multiplier = getMultiplier(member);
-    const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-    const embed = new EmbedBuilder()
-      .setColor(0xff0000)
-      .setAuthor({
-        name: `بطاقة الإداري - ${member.user.tag}`,
-        iconURL: member.displayAvatarURL({ size: 256 })
-      })
-      .addFields(
-        { name: '👤 العضو', value: `**<@${member.id}>**`, inline: true },
-        { name: '🔢 المستوى الحالي (حسب الرتبة)', value: `**Level ${doc.level}**`, inline: true },
-        { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-        {
-          name: '🎟️ نقاط الحالية',
-          value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-          inline: false
-        },
-        { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false }
-      )
-      .setFooter({
-        text: `بناءً على طلب ${message.author.tag}`,
-        iconURL: message.author.displayAvatarURL({ size: 128 })
-      });
-
-    if (nextReq) {
-      embed.addFields({
-        name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-        value: [
-          `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-          `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-          `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-        ].join('\n'),
-        inline: false
-      });
-    } else {
-      embed.addFields({
-        name: '🚀 الترقية القادمة',
-        value: '**أنت في أعلى مستوى متاح حالياً.**',
-        inline: false
-      });
-    }
-
-    await sendNoPing(message.channel, { embeds: [embed] });
-  } catch (err) {
-    console.error('Stats command error:', err);
-    await sendNoPing(message.channel, { embeds: [redPanel('صار خطأ أثناء تنفيذ أمر ستات.')] });
-  }
-
-  return;
-}
-    if (isBreakCommand) {
-      const guardKey = `${message.id}:break`;
-      if (!markProcessed(guardKey)) return;
-
-      // فقط أصحاب رتبة 1445473082180501655
-      if (!canEditBreak) return;
-
-      const targetArg = tokens.shift();
-      const reason = tokens.join(' ').trim();
-
-      if (!targetArg || !reason) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName> <السبب>`')]
-        });
+      ) {
         return;
       }
 
-      const targetMember = await fetchMember(message.guild, targetArg);
-      if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
+      if (isDuplicateCommand(message)) return;
 
-      // لا يشترط أن يكون إداريًا
-      try {
-        const result = await demoteOneLevel(message.guild, targetMember, {
-          reason,
-          byId: message.author.id
-        });
+      const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
+      const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+      const canEditBreak = message.member.roles.cache.has(EDIT_BREAK_ALLOWED_ROLE_ID);
+      const canWarnRole = message.member.roles.cache.has(WARN_ALLOWED_ROLE_ID);
+      const inWarnChannel = isWarnChannel(message.channel.id);
 
-        const breakEmbed = new EmbedBuilder()
+      if (isTasksCommand) {
+        const guardKey = `${message.id}:tasks`;
+        if (!markProcessed(guardKey)) return;
+
+        if (!isAdminMember(message.member)) return;
+
+        const myDoc = await getOrCreate(message.guild.id, message.member.id);
+        await syncDocLevelWithMemberRoles(message.member, myDoc);
+        await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
+
+        const doc = await getOrCreate(message.guild.id, message.member.id);
+        const multiplier = getMultiplier(message.member);
+        const nextCfg = getNextLevelConfig(doc.level);
+        const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+        const embed = new EmbedBuilder()
           .setColor(0xff0000)
-          .setTitle('⬇️ كسر رتبة إداري')
-          .setDescription(
-            [
-              `**تم كسر رتبة الإداري:** <@${targetMember.id}>`,
-              `**من:** ${result.fromName}`,
-              `**إلى:** ${result.toName}`,
-              `**السبب:** ${reason}`,
-              `**بواسطة:** <@${message.author.id}>`,
-              `**الرتب التي أُزيلت:** ${formatRoleMentions(result.removedRoles)}`,
-              `**الرتب المضافة:** ${formatRoleMentions(result.addedRoles)}`
-            ].join('\n')
+          .setTitle('📌 حالة المهام')
+          .setDescription(`**الإداري:** <@${message.member.id}>`)
+          .addFields(
+            { name: '🔢 مستواك الحالي', value: `**Level ${doc.level}**`, inline: true },
+            { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+            {
+              name: '📦 نقاطك الحالية',
+              value: `🎟️ ${doc.points.tickets}\n⚠️ ${doc.points.warns}\n✨ ${doc.points.xp}`,
+              inline: false
+            }
           )
           .setFooter({
             text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
             iconURL: message.author.displayAvatarURL({ size: 128 })
           });
 
-        // إرسال بنل قناة الإعلانات + منشن خارج البنل + الخط خارج البنل
-        const announceChannel = message.guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
-        if (announceChannel) {
-          await announceChannel.send({
-            content: `<@&${SUPPORT_ROLE_ID}>`,
-            allowedMentions: { roles: [SUPPORT_ROLE_ID] },
-            embeds: [breakEmbed]
+        if (nextReq) {
+          embed.addFields({
+            name: `🚀 المطلوب للترقية التالية (${nextCfg?.name || `Level ${doc.level + 1}`})`,
+            value: [
+              `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
+              `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
+              `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
+            ].join('\n'),
+            inline: false
           });
-          if (PANEL_LINE_IMAGE_URL) {
-            await announceChannel.send({ content: PANEL_LINE_IMAGE_URL, allowedMentions: { parse: [] } });
-          }
+        } else {
+          embed.addFields({
+            name: '🚀 الترقية التالية',
+            value: '**أنت في أعلى مستوى متاح حالياً.**',
+            inline: false
+          });
         }
 
-        // DM للشخص المتأثر
+        await sendNoPing(message.channel, { embeds: [embed] });
+        return;
+      }
+
+      if (isStatsCommand) {
+        const guardKey = `${message.id}:stats`;
+        if (!markProcessed(guardKey)) return;
+
         try {
-          const dmEmbed = new EmbedBuilder()
+          let targetRaw = tokens.join(' ').trim();
+          let member = message.member;
+          let targetUser = message.author;
+
+          // دعم صيغ: "ستات ايدي 123" أو "stats id 123"
+          const lowerFirst = (tokens[0] || '').toLowerCase();
+          if (['id', 'userid', 'ايدي', 'آيدي', 'اىدي'].includes(lowerFirst) && tokens[1]) {
+            targetRaw = tokens[1];
+          }
+
+          if (targetRaw) {
+            const fetchedMember = await fetchMember(message.guild, targetRaw);
+
+            if (fetchedMember) {
+              member = fetchedMember;
+              targetUser = fetchedMember.user;
+            } else {
+              const idOnly = extractIdFromMention(targetRaw);
+              if (!idOnly) {
+                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. تأكد من المنشن أو الـ ID.')] });
+                return;
+              }
+
+              try {
+                targetUser = await message.client.users.fetch(idOnly, { force: true });
+              } catch {
+                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+                return;
+              }
+
+              member = null;
+            }
+          }
+
+          const targetId = member?.id || targetUser.id;
+          const doc = await getOrCreate(message.guild.id, targetId);
+
+          // مهم: إذا متاح كـ GuildMember نسوي مزامنة المستوى من الرتب الحالية
+          if (member) {
+            await syncDocLevelWithMemberRoles(member, doc);
+          }
+
+          const points = {
+            tickets: Number(doc.points?.tickets || 0),
+            warns: Number(doc.points?.warns || 0),
+            xp: Number(doc.points?.xp || 0)
+          };
+          const lifetime = {
+            tickets: Number(doc.lifetime?.tickets || 0),
+            warns: Number(doc.lifetime?.warns || 0),
+            xp: Number(doc.lifetime?.xp || 0)
+          };
+
+          const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: targetId });
+          const totalUserXp = userXpDoc ? Number(userXpDoc.textXp || 0) + Number(userXpDoc.voiceXp || 0) : 0;
+
+          const levelNow = Number(doc.level || 0);
+          const nextCfg = getNextLevelConfig(levelNow);
+          const multiplier = getMultiplier(member || message.member);
+          const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+          const avatar =
+            (member?.displayAvatarURL?.({ size: 256 })) ||
+            (targetUser?.displayAvatarURL?.({ size: 256 })) ||
+            message.guild.iconURL({ size: 256 });
+
+          const embed = new EmbedBuilder()
             .setColor(0xff0000)
-            .setTitle('⬇️ إشعار كسر رتبة')
+            .setAuthor({
+              name: `بطاقة الإحصائيات - ${targetUser.tag}`,
+              iconURL: avatar || undefined
+            })
+            .addFields(
+              { name: '👤 العضو', value: `**<@${targetId}>**`, inline: true },
+              {
+                name: '🔢 المستوى الحالي (حسب الرتبة)',
+                value: `**Level ${levelNow}**${
+                  doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(new Date(doc.promotedAt).getTime() / 1000)}:R>` : ''
+                }`,
+                inline: true
+              },
+              { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+              {
+                name: '🎟️ النقاط الحالية',
+                value: `**تذاكر:** ${points.tickets}\n**تحذيرات:** ${points.warns}\n**خبرة:** ${points.xp}`,
+                inline: false
+              },
+              { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
+              {
+                name: '📦 إجمالي المساهمات',
+                value: `**تذاكر:** ${lifetime.tickets}\n**تحذيرات:** ${lifetime.warns}\n**خبرة:** ${lifetime.xp}`,
+                inline: false
+              }
+            )
+            .setFooter({
+              text: `بناءً على طلب ${message.author.tag}`,
+              iconURL: message.author.displayAvatarURL({ size: 128 })
+            });
+
+          if (nextReq) {
+            embed.addFields({
+              name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${levelNow + 1}`}`,
+              value: [
+                `🎟️ ${formatProgress(points.tickets, nextReq.tickets)}`,
+                `⚠️ ${formatProgress(points.warns, nextReq.warns)}`,
+                `✨ ${formatProgress(points.xp, nextReq.xp)}`
+              ].join('\n'),
+              inline: false
+            });
+          } else {
+            embed.addFields({
+              name: '🚀 الترقية القادمة',
+              value: '**أنت في أعلى مستوى متاح حالياً.**',
+              inline: false
+            });
+          }
+
+          await sendNoPing(message.channel, { embeds: [embed] });
+        } catch (err) {
+          console.error('Stats command error:', err);
+          await sendNoPing(message.channel, { embeds: [redPanel('صار خطأ أثناء تنفيذ أمر ستات.')] });
+        }
+
+        return;
+      }
+
+      if (isBreakCommand) {
+        const guardKey = `${message.id}:break`;
+        if (!markProcessed(guardKey)) return;
+
+        if (!canEditBreak) return;
+
+        const targetArg = tokens.shift();
+        const reason = tokens.join(' ').trim();
+
+        if (!targetArg || !reason) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName> <السبب>`')]
+          });
+          return;
+        }
+
+        const targetMember = await fetchMember(message.guild, targetArg);
+        if (!targetMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        try {
+          const result = await demoteOneLevel(message.guild, targetMember, {
+            reason,
+            byId: message.author.id
+          });
+
+          const breakEmbed = new EmbedBuilder()
+            .setColor(0xff0000)
+            .setTitle('⬇️ كسر رتبة إداري')
             .setDescription(
               [
-                `**مرحباً <@${targetMember.id}>**`,
-                `تم كسر رتبتك مستوى واحد.`,
+                `**تم كسر رتبة الإداري:** <@${targetMember.id}>`,
                 `**من:** ${result.fromName}`,
                 `**إلى:** ${result.toName}`,
                 `**السبب:** ${reason}`,
-                `**بواسطة:** <@${message.author.id}>`
+                `**بواسطة:** <@${message.author.id}>`,
+                `**الرتب التي أُزيلت:** ${formatRoleMentions(result.removedRoles)}`,
+                `**الرتب المضافة:** ${formatRoleMentions(result.addedRoles)}`
               ].join('\n')
-            );
-          await targetMember.send({ embeds: [dmEmbed] });
-        } catch {}
+            )
+            .setFooter({
+              text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+              iconURL: message.author.displayAvatarURL({ size: 128 })
+            });
 
-        await sendNoPing(message.channel, {
-          embeds: [redPanel(`تم كسر رتبة <@${targetMember.id}> بنجاح.`)]
-        });
-      } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err?.message || 'تعذر تنفيذ أمر كسر.')] });
-      }
-      return;
-    }
+          const announceChannel = message.guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
+          if (announceChannel) {
+            await announceChannel.send({
+              content: `<@&${SUPPORT_ROLE_ID}>`,
+              allowedMentions: { roles: [SUPPORT_ROLE_ID] },
+              embeds: [breakEmbed]
+            });
+            if (PANEL_LINE_IMAGE_URL) {
+              await announceChannel.send({ content: PANEL_LINE_IMAGE_URL, allowedMentions: { parse: [] } });
+            }
+          }
 
-    if (isConvertCommand) {
-      const guardKey = `${message.id}:convert`;
-      if (!markProcessed(guardKey)) return;
-      if (!hasSupportRole) return;
+          try {
+            const dmEmbed = new EmbedBuilder()
+              .setColor(0xff0000)
+              .setTitle('⬇️ إشعار كسر رتبة')
+              .setDescription(
+                [
+                  `**مرحباً <@${targetMember.id}>**`,
+                  `تم كسر رتبتك مستوى واحد.`,
+                  `**من:** ${result.fromName}`,
+                  `**إلى:** ${result.toName}`,
+                  `**السبب:** ${reason}`,
+                  `**بواسطة:** <@${message.author.id}>`
+                ].join('\n')
+              );
+            await targetMember.send({ embeds: [dmEmbed] });
+          } catch {}
 
-      let amountRaw, fromType, toType;
-      if (tokens.length >= 3) {
-        if (Number.isFinite(Number(tokens[0]))) {
-          amountRaw = tokens[0];
-          fromType = tokens[1];
-          toType = tokens[2];
-        } else {
-          fromType = tokens[0];
-          amountRaw = tokens[1];
-          toType = tokens[2];
+          await sendNoPing(message.channel, {
+            embeds: [redPanel(`تم كسر رتبة <@${targetMember.id}> بنجاح.`)]
+          });
+        } catch (err) {
+          await sendNoPing(message.channel, { embeds: [redPanel(err?.message || 'تعذر تنفيذ أمر كسر.')] });
         }
-      }
-
-      if (!amountRaw || !fromType || !toType) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `تبديل <الكمية> <من-نوع> <إلى-نوع>`')]
-        });
         return;
       }
 
-      const amount = Number(amountRaw);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+      if (isConvertCommand) {
+        const guardKey = `${message.id}:convert`;
+        if (!markProcessed(guardKey)) return;
+        if (!hasSupportRole) return;
+
+        let amountRaw, fromType, toType;
+        if (tokens.length >= 3) {
+          if (Number.isFinite(Number(tokens[0]))) {
+            amountRaw = tokens[0];
+            fromType = tokens[1];
+            toType = tokens[2];
+          } else {
+            fromType = tokens[0];
+            amountRaw = tokens[1];
+            toType = tokens[2];
+          }
+        }
+
+        if (!amountRaw || !fromType || !toType) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تبديل <الكمية> <من-نوع> <إلى-نوع>`')]
+          });
+          return;
+        }
+
+        const amount = Number(amountRaw);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+          return;
+        }
+
+        const doc = await getOrCreate(message.guild.id, message.author.id);
+
+        try {
+          const result = await convertPoints(doc, fromType, amount, toType);
+          const embed = greenPanel(
+            [
+              `**تم التبديل بنجاح!**`,
+              `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}`,
+              `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}`
+            ].join('\n'),
+            '🔄 تبديل النقاط'
+          );
+          await sendNoPing(message.channel, { embeds: [embed] });
+        } catch (err) {
+          await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التبديل.')] });
+        }
         return;
       }
 
-      const doc = await getOrCreate(message.guild.id, message.author.id);
+      if (isTransferCommand) {
+        const guardKey = `${message.id}:transfer`;
+        if (!markProcessed(guardKey)) return;
+        if (!hasSupportRole) return;
 
-      try {
-        const result = await convertPoints(doc, fromType, amount, toType);
+        if (tokens.length < 3) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تحويل <نوع> <@عضو> <الكمية>`')]
+          });
+          return;
+        }
+
+        const typeArg = tokens[0];
+        const targetArg = tokens[1];
+        const amountArg = tokens[2];
+
+        const pointType = normalizePointKey(typeArg);
+        if (!pointType) {
+          await sendNoPing(message.channel, { embeds: [redPanel('نوع النقاط غير معروف.')] });
+          return;
+        }
+
+        const targetMember = await fetchMember(message.guild, targetArg);
+        if (!targetMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        if (targetMember.id === message.author.id) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لا يمكنك تحويل نقاط لنفسك.')] });
+          return;
+        }
+
+        const amount = Number(amountArg);
+        if (!Number.isFinite(amount) || amount <= 0) {
+          await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+          return;
+        }
+
+        const fromDoc = await getOrCreate(message.guild.id, message.author.id);
+        const toDoc = await getOrCreate(message.guild.id, targetMember.id);
+
+        try {
+          const result = await transferPoints(fromDoc, toDoc, typeArg, amount);
+          const embed = greenPanel(
+            `**تم التحويل بنجاح من <@${message.author.id}> إلى <@${targetMember.id}> (${result.amount})**`,
+            '📤 تحويل النقاط'
+          );
+          await sendNoPing(message.channel, { embeds: [embed] });
+        } catch (err) {
+          await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
+        }
+        return;
+      }
+
+      if (isEditCommand) {
+        const guardKey = `${message.id}:edit`;
+        if (!markProcessed(guardKey)) return;
+
+        if (!canEditBreak) return;
+
+        if (tokens.length < 2) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تعديل <نوع> <قيمة> [@عضو]` أو `تعديل <نوع> <@عضو> <قيمة>`')]
+          });
+          return;
+        }
+
+        const typeArg = tokens[0];
+        const pointType = normalizePointKey(typeArg);
+        if (!pointType) {
+          await sendNoPing(message.channel, { embeds: [redPanel('نوع غير معروف.')] });
+          return;
+        }
+
+        let targetMember = message.member;
+        let amount = null;
+
+        if (tokens[1] && extractIdFromMention(tokens[1])) {
+          targetMember = await fetchMember(message.guild, tokens[1]);
+          amount = Number(tokens[2]);
+        } else if (tokens[2] && extractIdFromMention(tokens[2])) {
+          targetMember = await fetchMember(message.guild, tokens[2]);
+          amount = Number(tokens[1]);
+        } else {
+          amount = Number(tokens[1]);
+        }
+
+        if (!targetMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        if (!Number.isFinite(amount) || amount < 0) {
+          await sendNoPing(message.channel, { embeds: [redPanel('القيمة يجب أن تكون رقم صالح (0 أو أكبر).')] });
+          return;
+        }
+
+        const doc = await getOrCreate(message.guild.id, targetMember.id);
+        doc.points[pointType] = amount;
+        doc.lifetime[pointType] = Math.max(doc.lifetime[pointType] || 0, amount);
+        await doc.save();
+
+        await tryPromote(message, targetMember, { announceInChannel: true, dmOnPromote: true });
+
         const embed = greenPanel(
-          [
-            `**تم التبديل بنجاح!**`,
-            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}`,
-            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}`
-          ].join('\n'),
-          '🔄 تبديل النقاط'
+          `**تم تعديل ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetMember.id}> إلى ${amount}**`,
+          '✏️ تعديل الإحصائيات'
         );
+
         await sendNoPing(message.channel, { embeds: [embed] });
-      } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التبديل.')] });
-      }
-      return;
-    }
-
-    if (isTransferCommand) {
-      const guardKey = `${message.id}:transfer`;
-      if (!markProcessed(guardKey)) return;
-      if (!hasSupportRole) return;
-
-      if (tokens.length < 3) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `تحويل <نوع> <@عضو> <الكمية>`')]
-        });
         return;
       }
 
-      const typeArg = tokens[0];
-      const targetArg = tokens[1];
-      const amountArg = tokens[2];
+      if (isWarnCommand) {
+        const guardKey = `${message.id}:warn`;
+        if (!markProcessed(guardKey)) return;
 
-      const pointType = normalizePointKey(typeArg);
-      if (!pointType) {
-        await sendNoPing(message.channel, { embeds: [redPanel('نوع النقاط غير معروف.')] });
+        if (!canWarnRole) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ ما عندك رتبة صلاحية التحذير المطلوبة.')] });
+          return;
+        }
+        if (!inWarnChannel) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ أمر التحذير يعمل فقط في شات التحذيرات.')] });
+          return;
+        }
+        if (!message.member.permissions.has(MOD_REQUIRED_PERM)) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ تحتاج صلاحية Moderate Members.')] });
+          return;
+        }
+
+        const targetArg = tokens.shift();
+        if (!targetArg) {
+          await sendNoPing(message.channel, { embeds: [redPanel('الرجاء تحديد العضو: `warn @user السبب`')] });
+          return;
+        }
+
+        const targetMember = await fetchMember(message.guild, targetArg);
+        if (!targetMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        if (targetMember.user.bot) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ لا يمكن تحذير بوت.')] });
+          return;
+        }
+        if (targetMember.id === message.author.id) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ لا يمكنك تحذير نفسك.')] });
+          return;
+        }
+
+        if (
+          message.guild.ownerId !== message.author.id &&
+          message.member.roles.highest.position <= targetMember.roles.highest.position
+        ) {
+          await sendNoPing(message.channel, { embeds: [redPanel('❌ لا يمكنك تحذير عضو أعلى/مساوي لرتبتك.')] });
+          return;
+        }
+
+        const reason = tokens.join(' ').trim();
+        if (!reason) {
+          await sendNoPing(message.channel, { embeds: [redPanel('الرجاء كتابة سبب التحذير.')] });
+          return;
+        }
+
+        if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) return;
+
+        await addWarningAndNotify(message, targetMember, reason);
         return;
       }
 
-      const targetMember = await fetchMember(message.guild, targetArg);
-      if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+      if (isWarningsCommand) {
+        const guardKey = `${message.id}:warnings`;
+        if (!markProcessed(guardKey)) return;
+
+        const targetArg = tokens.join(' ').trim();
+        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        if (!member) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        await showWarnings(message, member);
         return;
       }
 
-      if (targetMember.id === message.author.id) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لا يمكنك تحويل نقاط لنفسك.')] });
-        return;
-      }
+      if (isClaimCommand) {
+        const guardKey = `${message.id}:claim`;
+        if (!markProcessed(guardKey, COOLDOWN)) return;
 
-      // لا يشترط أن يكون الهدف إداريًا
-      const amount = Number(amountArg);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
-        return;
-      }
+        if (!isTicketChannel) {
+          await sendManagedEmbedOnce(message.channel, 'claim-outside', {
+            embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
+          });
+          return;
+        }
+        if (!hasSupportRole) return;
 
-      const fromDoc = await getOrCreate(message.guild.id, message.author.id);
-      const toDoc = await getOrCreate(message.guild.id, targetMember.id);
+        let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
+        if (ticketClaim) return;
 
-      try {
-        const result = await transferPoints(fromDoc, toDoc, typeArg, amount);
-        const embed = greenPanel(
-          `**تم التحويل بنجاح من <@${message.author.id}> إلى <@${targetMember.id}> (${result.amount})**`,
-          '📤 تحويل النقاط'
-        );
-        await sendNoPing(message.channel, { embeds: [embed] });
-      } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
-      }
-      return;
-    }
-
-    if (isEditCommand) {
-      const guardKey = `${message.id}:edit`;
-      if (!markProcessed(guardKey)) return;
-
-      // فقط أصحاب رتبة 1445473082180501655
-      if (!canEditBreak) return;
-
-      if (tokens.length < 2) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `تعديل <نوع> <قيمة> [@عضو]` أو `تعديل <نوع> <@عضو> <قيمة>`')]
-        });
-        return;
-      }
-
-      const typeArg = tokens[0];
-      const pointType = normalizePointKey(typeArg);
-      if (!pointType) {
-        await sendNoPing(message.channel, { embeds: [redPanel('نوع غير معروف.')] });
-        return;
-      }
-
-      let targetMember = message.member;
-      let amount = null;
-
-      // دعم الصيغتين:
-      // تعديل تكت 1000
-      // تعديل تكت @user 1000
-      // تعديل تكت 1000 @user
-      if (tokens[1] && extractIdFromMention(tokens[1])) {
-        targetMember = await fetchMember(message.guild, tokens[1]);
-        amount = Number(tokens[2]);
-      } else if (tokens[2] && extractIdFromMention(tokens[2])) {
-        targetMember = await fetchMember(message.guild, tokens[2]);
-        amount = Number(tokens[1]);
-      } else {
-        amount = Number(tokens[1]);
-      }
-
-      if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
-
-      // لا يشترط أن يكون الهدف إداريًا
-      if (!Number.isFinite(amount) || amount < 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('القيمة يجب أن تكون رقم صالح (0 أو أكبر).')] });
-        return;
-      }
-
-      const doc = await getOrCreate(message.guild.id, targetMember.id);
-      doc.points[pointType] = amount;
-      doc.lifetime[pointType] = Math.max(doc.lifetime[pointType] || 0, amount);
-      await doc.save();
-
-      await tryPromote(message, targetMember, { announceInChannel: true, dmOnPromote: true });
-
-      const embed = greenPanel(
-        `**تم تعديل ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetMember.id}> إلى ${amount}**`,
-        '✏️ تعديل الإحصائيات'
-      );
-
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
-    }
-
-    if (isWarnCommand) {
-      const guardKey = `${message.id}:warn`;
-      if (!markProcessed(guardKey)) return;
-
-      // فقط الرتبة المطلوبة + نفس شات التحذير فقط
-      if (!canWarnRole) return;
-      if (!inWarnChannel) return;
-
-      // يبقى شرط الصلاحية كطبقة أمان إضافية
-      if (!message.member.permissions.has(MOD_REQUIRED_PERM)) return;
-
-      const targetArg = tokens.shift();
-      if (!targetArg) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الرجاء تحديد العضو: `warn @user السبب`')] });
-        return;
-      }
-
-      const targetMember = await fetchMember(message.guild, targetArg);
-      if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
-
-      if (targetMember.user.bot) return;
-      if (targetMember.id === message.author.id) return;
-
-      if (
-        message.guild.ownerId !== message.author.id &&
-        message.member.roles.highest.position <= targetMember.roles.highest.position
-      ) {
-        return;
-      }
-
-      const reason = tokens.join(' ').trim();
-      if (!reason) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الرجاء كتابة سبب التحذير.')] });
-        return;
-      }
-
-      if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) return;
-
-      await addWarningAndNotify(message, targetMember, reason);
-      return;
-    }
-
-    if (isWarningsCommand) {
-      const guardKey = `${message.id}:warnings`;
-      if (!markProcessed(guardKey)) return;
-
-      const targetArg = tokens.join(' ').trim();
-      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
-      if (!member) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
-
-      await showWarnings(message, member);
-      return;
-    }
-
-    if (isClaimCommand) {
-      const guardKey = `${message.id}:claim`;
-      if (!markProcessed(guardKey, COOLDOWN)) return;
-
-      if (!isTicketChannel) {
-        await sendManagedEmbedOnce(message.channel, 'claim-outside', {
-          embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
-        });
-        return;
-      }
-      if (!hasSupportRole) return;
-
-      let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
-      if (ticketClaim) return;
-
-      ticketClaim = new TicketClaim({
-        guildId: message.guild.id,
-        channelId: message.channel.id,
-        claimedById: message.author.id,
-        claimedAt: new Date()
-      });
-      await ticketClaim.save();
-
-      try {
-        await addPoints({ guildId: message.guild.id, userId: message.author.id, tickets: 1 });
-        await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
-      } catch (err) {
-        console.error('Error adding ticket points:', err);
-      }
-
-      try {
-        await AdminStats.findOneAndUpdate(
-          { guildId: message.guild.id, adminId: message.author.id },
-          { $inc: { claimsCount: 1 } },
-          { upsert: true }
-        );
-      } catch (err) {
-        console.error('Error updating admin stats:', err);
-      }
-
-      await sendManagedEmbedOnce(message.channel, 'claim-success', {
-        embeds: [redPanel(`✅ <@${message.author.id}> قام باستلام التذكرة.`)]
-      });
-      return;
-    }
-
-    if (isUnclaimCommand) {
-      const guardKey = `${message.id}:unclaim`;
-      if (!markProcessed(guardKey, COOLDOWN)) return;
-
-      if (!isTicketChannel) return;
-      if (!hasSupportRole) return;
-
-      const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
-      if (!ticketClaim) return;
-      if (ticketClaim.claimedById !== message.author.id) return;
-
-      await TicketClaim.deleteOne({ channelId: message.channel.id });
-      await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
-        embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
-      });
-      return;
-    }
-
-    if (isXpCommand) {
-      const guardKey = `${message.id}:xp`;
-      if (!markProcessed(guardKey)) return;
-
-      const targetArg = tokens.join(' ').trim();
-      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
-      if (!member) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
-
-      const now = Date.now();
-      let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
-      if (!userXp) {
-        userXp = new UserXP({
+        ticketClaim = new TicketClaim({
           guildId: message.guild.id,
-          userId: member.id,
-          textXp: 0,
-          voiceXp: 0,
-          totalXp: 0,
-          level: 0,
-          dailyResetAt: startOfDay(now),
-          weeklyResetAt: startOfWeek(now),
-          monthlyResetAt: startOfMonth(now),
-          dailyTextXp: 0,
-          weeklyTextXp: 0,
-          monthlyTextXp: 0,
-          dailyVoiceXp: 0,
-          weeklyVoiceXp: 0,
-          monthlyVoiceXp: 0
+          channelId: message.channel.id,
+          claimedById: message.author.id,
+          claimedAt: new Date()
         });
-      }
+        await ticketClaim.save();
 
-      resetScopes(userXp, now);
-      userXp.textXp = userXp.textXp || 0;
-      userXp.voiceXp = userXp.voiceXp || 0;
-      userXp.totalXp = (userXp.textXp || 0) + (userXp.voiceXp || 0);
-      userXp.level = calculateLevel(userXp.totalXp);
-      await userXp.save();
+        try {
+          await addPoints({ guildId: message.guild.id, userId: message.author.id, tickets: 1 });
+          await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
+        } catch (err) {
+          console.error('Error adding ticket points:', err);
+        }
 
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setAuthor({ name: `لوحة XP - ${message.guild.name}` })
-        .addFields(
-          { name: '🏅 المستوى', value: `**Level ${userXp.level} • ${userXp.totalXp} XP**`, inline: true },
-          { name: '📝 خبرة كتابية', value: `**${userXp.textXp} XP**`, inline: true },
-          { name: '🎙️ خبرة صوتية', value: `**${userXp.voiceXp} XP**`, inline: true }
-        );
+        try {
+          await AdminStats.findOneAndUpdate(
+            { guildId: message.guild.id, adminId: message.author.id },
+            { $inc: { claimsCount: 1 } },
+            { upsert: true }
+          );
+        } catch (err) {
+          console.error('Error updating admin stats:', err);
+        }
 
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
-    }
-
-    if (isTopCommand) {
-      const guardKey = `${message.id}:t`;
-      if (!markProcessed(guardKey, 2000)) return;
-
-      const scopeArg = tokens.shift();
-      const scope = getTopScopeFromArg(scopeArg);
-
-      if (!scope) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all`.')]
+        await sendManagedEmbedOnce(message.channel, 'claim-success', {
+          embeds: [redPanel(`✅ <@${message.author.id}> قام باستلام التذكرة.`)]
         });
         return;
       }
 
-      const topReplyTag = `top:${scope}:${message.author.id}`;
-      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) return;
+      if (isUnclaimCommand) {
+        const guardKey = `${message.id}:unclaim`;
+        if (!markProcessed(guardKey, COOLDOWN)) return;
 
-      const now = Date.now();
-      const docs = await UserXP.find({ guildId: message.guild.id });
+        if (!isTicketChannel) return;
+        if (!hasSupportRole) return;
 
-      const rows = docs.map(doc => {
-        const scoped = getScopedValues(doc, scope, now);
-        const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
-        return {
-          userId: doc.userId,
-          textXp: scoped.textXp,
-          voiceXp: scoped.voiceXp,
-          totalXp: scoped.totalXp,
-          level: doc.level ?? calculateLevel(totalForLevel)
-        };
-      });
+        const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
+        if (!ticketClaim) return;
+        if (ticketClaim.claimedById !== message.author.id) return;
 
-      const sortedRows = [...rows].sort((a, b) => b.totalXp - a.totalXp);
-      const rankedRows = sortedRows.map((row, index) => ({ ...row, rank: index + 1 }));
-      const nonZeroRows = rankedRows.filter(row => row.totalXp > 0);
-      const topRows = nonZeroRows.slice(0, TOP_LIMIT);
-
-      if (!nonZeroRows.length) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)]
+        await TicketClaim.deleteOne({ channelId: message.channel.id });
+        await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
+          embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
         });
         return;
       }
 
-      const mainList = topRows
-        .map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`)
-        .join('\n');
+      if (isXpCommand) {
+        const guardKey = `${message.id}:xp`;
+        if (!markProcessed(guardKey)) return;
 
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setAuthor({ name: `قائمة المتصدرين - ${scopeLabel(scope)}` })
-        .addFields(
-          { name: '🏆 المتصدرون', value: mainList || '**لا توجد بيانات.**', inline: false },
-          { name: '📝 Top Text XP', value: formatTopField(topRows, 'textXp'), inline: true },
-          { name: '🎙️ Top Voice XP', value: formatTopField(topRows, 'voiceXp'), inline: true }
-        );
+        const targetArg = tokens.join(' ').trim();
+        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        if (!member) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
 
-      if (TOP_PANEL_IMAGE_URL && /^https?:\/\//i.test(TOP_PANEL_IMAGE_URL)) {
-        embed.setImage(TOP_PANEL_IMAGE_URL);
+        const now = Date.now();
+        let userXp = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
+        if (!userXp) {
+          userXp = new UserXP({
+            guildId: message.guild.id,
+            userId: member.id,
+            textXp: 0,
+            voiceXp: 0,
+            totalXp: 0,
+            level: 0,
+            dailyResetAt: startOfDay(now),
+            weeklyResetAt: startOfWeek(now),
+            monthlyResetAt: startOfMonth(now),
+            dailyTextXp: 0,
+            weeklyTextXp: 0,
+            monthlyTextXp: 0,
+            dailyVoiceXp: 0,
+            weeklyVoiceXp: 0,
+            monthlyVoiceXp: 0
+          });
+        }
+
+        resetScopes(userXp, now);
+        userXp.textXp = userXp.textXp || 0;
+        userXp.voiceXp = userXp.voiceXp || 0;
+        userXp.totalXp = (userXp.textXp || 0) + (userXp.voiceXp || 0);
+        userXp.level = calculateLevel(userXp.totalXp);
+        await userXp.save();
+
+        const embed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setAuthor({ name: `لوحة XP - ${message.guild.name}` })
+          .addFields(
+            { name: '🏅 المستوى', value: `**Level ${userXp.level} • ${userXp.totalXp} XP**`, inline: true },
+            { name: '📝 خبرة كتابية', value: `**${userXp.textXp} XP**`, inline: true },
+            { name: '🎙️ خبرة صوتية', value: `**${userXp.voiceXp} XP**`, inline: true }
+          );
+
+        await sendNoPing(message.channel, { embeds: [embed] });
+        return;
       }
 
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
+      if (isTopCommand) {
+        const guardKey = `${message.id}:t`;
+        if (!markProcessed(guardKey, 2000)) return;
+
+        const scopeArg = tokens.shift();
+        const scope = getTopScopeFromArg(scopeArg);
+
+        if (!scope) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all`.')]
+          });
+          return;
+        }
+
+        const topReplyTag = `top:${scope}:${message.author.id}`;
+        if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) return;
+
+        const now = Date.now();
+        const docs = await UserXP.find({ guildId: message.guild.id });
+
+        const rows = docs.map(doc => {
+          const scoped = getScopedValues(doc, scope, now);
+          const totalForLevel = doc.totalXp || (doc.textXp || 0) + (doc.voiceXp || 0);
+          return {
+            userId: doc.userId,
+            textXp: scoped.textXp,
+            voiceXp: scoped.voiceXp,
+            totalXp: scoped.totalXp,
+            level: doc.level ?? calculateLevel(totalForLevel)
+          };
+        });
+
+        const sortedRows = [...rows].sort((a, b) => b.totalXp - a.totalXp);
+        const rankedRows = sortedRows.map((row, index) => ({ ...row, rank: index + 1 }));
+        const nonZeroRows = rankedRows.filter(row => row.totalXp > 0);
+        const topRows = nonZeroRows.slice(0, TOP_LIMIT);
+
+        if (!nonZeroRows.length) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)]
+          });
+          return;
+        }
+
+        const mainList = topRows
+          .map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r.totalXp}** | **Lv: ${r.level}**`)
+          .join('\n');
+
+        const embed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setAuthor({ name: `قائمة المتصدرين - ${scopeLabel(scope)}` })
+          .addFields(
+            { name: '🏆 المتصدرون', value: mainList || '**لا توجد بيانات.**', inline: false },
+            { name: '📝 Top Text XP', value: formatTopField(topRows, 'textXp'), inline: true },
+            { name: '🎙️ Top Voice XP', value: formatTopField(topRows, 'voiceXp'), inline: true }
+          );
+
+        if (TOP_PANEL_IMAGE_URL && /^https?:\/\//i.test(TOP_PANEL_IMAGE_URL)) {
+          embed.setImage(TOP_PANEL_IMAGE_URL);
+        }
+
+        await sendNoPing(message.channel, { embeds: [embed] });
+        return;
+      }
+    } catch (err) {
+      console.error('messageCreate fatal error:', err);
     }
   }
 };
