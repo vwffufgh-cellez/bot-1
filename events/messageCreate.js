@@ -38,7 +38,7 @@ const DM_USER_ON_WARN = true;
 const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
 
 // أوامر
-const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'ت'];
+const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'اتحدير', 'تحزير', 'ت'];
 const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات', 'تحديرات'];
 const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
 const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
@@ -596,89 +596,81 @@ module.exports = {
       return;
     }
 
-    if (isStatsCommand) {
-      const guardKey = `${message.id}:stats`;
-      if (!markProcessed(guardKey)) return;
+if (isStatsCommand) {
+  const guardKey = `${message.id}:stats`;
+  if (!markProcessed(guardKey)) return;
 
-      // لا يعتمد على رتبة "إداري" → يعمل لأي شخص
-      const targetRaw = tokens.join(' ').trim();
-      let member = message.member;
+  try {
+    const targetRaw = tokens.join(' ').trim();
+    let member = message.member;
 
-      if (targetRaw) {
-        const fetchedMember = await fetchMember(message.guild, targetRaw);
-        if (!fetchedMember) {
-          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-          return;
-        }
-        member = fetchedMember;
+    if (targetRaw) {
+      const fetchedMember = await fetchMember(message.guild, targetRaw);
+      if (!fetchedMember) {
+        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. تأكد من المنشن أو الـ ID.')] });
+        return;
       }
-
-      // جلب بيانات الإداري (إن وجد)
-      const doc = await getOrCreate(message.guild.id, member.id);
-      await syncDocLevelWithMemberRoles(member, doc);
-
-      const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
-      const totalUserXp = userXpDoc ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0) : 0;
-
-      const nextCfg = getNextLevelConfig(doc.level);
-      const multiplier = getMultiplier(member);
-      const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-      const embed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setAuthor({
-          name: `بطاقة الإداري - ${member.user.tag}`,
-          iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
-        })
-        .addFields(
-          { name: '👤 الإداري', value: `**<@${member.id}>**`, inline: true },
-          {
-            name: '🔢 المستوى الحالي',
-            value: `**Level ${doc.level}**${
-              doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''
-            }`,
-            inline: true
-          },
-          { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-          {
-            name: '🎟️ نقاطك الحالية',
-            value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-            inline: false
-          },
-          { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
-          {
-            name: '📦 إجمالي مساهماتك',
-            value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
-            inline: false
-          }
-        )
-        .setFooter({
-          text: `بناءً على طلب ${message.author.tag}`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
-
-      if (nextReq) {
-        embed.addFields({
-          name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-          value: [
-            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-          ].join('\n'),
-          inline: false
-        });
-      } else {
-        embed.addFields({
-          name: '🚀 الترقية القادمة',
-          value: '**أنت في أعلى مستوى متاح حالياً.**',
-          inline: false
-        });
-      }
-
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
+      member = fetchedMember;
     }
 
+    const doc = await getOrCreate(message.guild.id, member.id);
+    await syncDocLevelWithMemberRoles(member, doc); // مهم جدًا: المستوى = حسب الرتب الحالية
+
+    const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
+    const totalUserXp = userXpDoc ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0) : 0;
+
+    const nextCfg = getNextLevelConfig(doc.level);
+    const multiplier = getMultiplier(member);
+    const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setAuthor({
+        name: `بطاقة الإداري - ${member.user.tag}`,
+        iconURL: member.displayAvatarURL({ size: 256 })
+      })
+      .addFields(
+        { name: '👤 العضو', value: `**<@${member.id}>**`, inline: true },
+        { name: '🔢 المستوى الحالي (حسب الرتبة)', value: `**Level ${doc.level}**`, inline: true },
+        { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+        {
+          name: '🎟️ نقاط الحالية',
+          value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
+          inline: false
+        },
+        { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false }
+      )
+      .setFooter({
+        text: `بناءً على طلب ${message.author.tag}`,
+        iconURL: message.author.displayAvatarURL({ size: 128 })
+      });
+
+    if (nextReq) {
+      embed.addFields({
+        name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
+        value: [
+          `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
+          `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
+          `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
+        ].join('\n'),
+        inline: false
+      });
+    } else {
+      embed.addFields({
+        name: '🚀 الترقية القادمة',
+        value: '**أنت في أعلى مستوى متاح حالياً.**',
+        inline: false
+      });
+    }
+
+    await sendNoPing(message.channel, { embeds: [embed] });
+  } catch (err) {
+    console.error('Stats command error:', err);
+    await sendNoPing(message.channel, { embeds: [redPanel('صار خطأ أثناء تنفيذ أمر ستات.')] });
+  }
+
+  return;
+}
     if (isBreakCommand) {
       const guardKey = `${message.id}:break`;
       if (!markProcessed(guardKey)) return;
