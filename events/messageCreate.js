@@ -1,3 +1,4 @@
+// events/messageCreate.js
 const { Events, EmbedBuilder, PermissionsBitField } = require('discord.js');
 const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
@@ -18,7 +19,8 @@ const {
   demoteOneLevel
 } = require('../utils/adminProgressService');
 
-const SUPPORT_ROLE_ID = '1445473101629493383';
+const ADMIN_RANK_ROLE_ID = '1445473082180501655';
+const WARN_RANK_ROLE_ID = '1478329249550041140';
 const OWNER_ID = '1086312520874217644';
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
@@ -26,9 +28,6 @@ const COOLDOWN = 60_000;
 const WARN_LOG_CHANNEL_ID = '1463931942058852399';
 const DM_USER_ON_WARN = true;
 const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
-
-// الشات الوحيد المسموح فيه أوامر التحذير + ستات
-const ADMIN_COMMANDS_CHANNEL_ID = '1463932026595053641';
 
 // أوامر
 const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'ت'];
@@ -123,13 +122,13 @@ const redPanel = (text, title = null) => {
 };
 
 const greenPanel = (text, title = null) => {
-  const embed = new EmbedBuilder().setColor(0xff0000).setDescription(`**${text}**`);
+  const embed = new EmbedBuilder().setColor(0x00ff00).setDescription(`**${text}**`);
   if (title) embed.setTitle(title);
   return embed;
 };
 
 const redConfirmPanel = text =>
-  new EmbedBuilder().setColor(0xff0000).setDescription(`**✅ ${text}**`);
+  new EmbedBuilder().setColor(0x00ff00).setDescription(`**✅ ${text}**`);
 
 const formatRoleMentions = (roleIds = []) =>
   Array.isArray(roleIds) && roleIds.length ? roleIds.map(id => `<@&${id}>`).join('، ') : 'لا يوجد';
@@ -152,72 +151,57 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
     });
 };
 
-// =========================
-// خارج messageCreate (مرة وحدة فقط)
-// =========================
-async function fetchMember(guild, raw, message = null) {
-  if (!raw && !message) return null;
+const extractIdFromMention = arg => {
+  if (!arg) return null;
+  const match = arg.match(/^<@!?(\d+)>$/);
+  if (match) return match[1];
+  if (/^\d{15,21}$/.test(arg)) return arg;
+  return null;
+};
 
-  // 1) أولوية للمنشن الحقيقي من الرسالة
-  if (message?.mentions?.users?.size) {
-    const u = message.mentions.users.first();
-    if (u) {
+const fetchMember = async (guild, arg) => {
+  if (!arg) return null;
+  const raw = String(arg).trim();
+  if (!raw) return null;
+
+  const id = extractIdFromMention(raw);
+  if (id) {
+    try {
+      return await guild.members.fetch({ user: id, force: true });
+    } catch {
       try {
-        return await guild.members.fetch(u.id);
+        return await guild.members.fetch(id);
       } catch {
-        // ignore
+        return null;
       }
     }
   }
 
-  const query = (raw || '').trim();
-  if (!query) return null;
+  const normalized = raw.toLowerCase();
 
-  // 2) mention نصي: <@123> أو <@!123>
-  const mentionId = query.match(/^<@!?(\d{17,20})>$/)?.[1];
-
-  // 3) id مباشر
-  const directId = /^\d{17,20}$/.test(query) ? query : null;
-
-  const id = mentionId || directId;
-  if (id) {
-    try {
-      return await guild.members.fetch(id);
-    } catch {
-      return null;
-    }
-  }
-
-  // 4) بحث بالاسم/النك
   try {
-    const list = await guild.members.fetch({ query, limit: 10 });
-    if (!list?.size) return null;
+    await guild.members.fetch();
+  } catch {}
 
-    const q = query.toLowerCase();
-    return (
-      list.find(
-        (m) =>
-          m.user.username.toLowerCase() === q ||
-          m.user.tag.toLowerCase() === q ||
-          (m.nickname && m.nickname.toLowerCase() === q)
-      ) || list.first()
-    );
-  } catch {
-    return null;
-  }
-};
+  let found =
+    guild.members.cache.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
+    guild.members.cache.find(m => (m.user.username || '').toLowerCase() === normalized) ||
+    guild.members.cache.find(m => (m.displayName || '').toLowerCase() === normalized);
 
-const extractIdFromMention = arg => {
-  if (!arg) return null;
-  const match = arg.match(/^<@!?(\d{17,20})>$/);
-  if (match) return match[1];
-  if (/^\d{17,20}$/.test(arg)) return arg;
+  if (found) return found;
+
+  try {
+    const queried = await guild.members.fetch({ query: raw, limit: 50 });
+    found =
+      queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
+      queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
+      queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
+      queried.first();
+    if (found) return found;
+  } catch {}
+
   return null;
 };
-
-// تنظيف أحرف الاتجاه المخفية (RTL/LTR marks)
-const stripBidi = s =>
-  String(s || '').replace(/[\u200E\u200F\u202A-\u202E\u2066-\u2069]/g, '');
 
 function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
   const key = `${guildId}:${modId}:${targetId}:${reason.trim().toLowerCase()}`;
@@ -250,8 +234,10 @@ async function addWarningAndNotify(message, member, reason) {
   doc.total = (doc.total ?? 0) + 1;
   await doc.save();
 
-  await addPoints({ guildId: message.guild.id, userId: message.author.id, warns: 1 });
-  await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
+  if (message.member.roles.cache.has(WARN_RANK_ROLE_ID)) {
+    await addPoints({ guildId: message.guild.id, userId: message.author.id, warns: 1 });
+    await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
+  }
 
   const detailEmbed = warnDetailEmbed({ target: member, moderator: message.member, reason, caseId });
 
@@ -362,7 +348,7 @@ async function grantTextXp(message) {
 
   const xpAmount = randomBetween(TEXT_XP_MIN, TEXT_XP_MAX);
 
-  if (message.member?.roles.cache.has(SUPPORT_ROLE_ID)) {
+  if (message.member?.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
     await addPoints({ guildId: message.guild.id, userId: message.author.id, xp: xpAmount });
     await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
   }
@@ -489,25 +475,8 @@ module.exports = {
     const content = message.content.trim();
     if (!content.length) return;
 
-    // =========================
-    // Parsing ثابت (يدعم: "ستات 123" + "123 ستات")
-    // =========================
-    const rawParts = content
-      .split(/\s+/)
-      .filter(Boolean)
-      .map(p => stripBidi(p).trim())
-      .filter(Boolean);
-
-    let command = (rawParts[0] || '').toLowerCase();
-    let tokens = rawParts.slice(1);
-
-    if (!ALIASES.STATS.includes(command) && rawParts.length >= 2) {
-      const last = (rawParts[rawParts.length - 1] || '').toLowerCase();
-      if (ALIASES.STATS.includes(last)) {
-        command = last;
-        tokens = rawParts.slice(0, -1);
-      }
-    }
+    const tokens = content.split(/\s+/);
+    const command = tokens.shift().toLowerCase();
 
     const isWarnCommand = WARN_ALIASES.includes(command);
     const isWarningsCommand = WARNINGS_ALIASES.includes(command);
@@ -543,90 +512,64 @@ module.exports = {
 
     if (isDuplicateCommand(message)) return;
 
+    const hasAdminRankRole = message.member.roles.cache.has(ADMIN_RANK_ROLE_ID);
+    const hasWarnRankRole = message.member.roles.cache.has(WARN_RANK_ROLE_ID);
     const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
-    const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+
+    if (isTasksCommand) {
+      const guardKey = `${message.id}:tasks`;
+      if (!markProcessed(guardKey)) return;
+
+      if (!hasAdminRankRole) return;
+
+      await sendNoPing(message.channel, { embeds: [redPanel('أمر المهام سيتم تفعيله لاحقاً.')] });
+      return;
+    }
 
     if (isStatsCommand) {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
 
-      if (message.channel.id !== ADMIN_COMMANDS_CHANNEL_ID) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel(`أمر ستات يعمل فقط في <#${ADMIN_COMMANDS_CHANNEL_ID}>`)]
-        });
-        return;
-      }
+      if (!hasAdminRankRole) return;
 
       const targetRaw = tokens.join(' ').trim();
+      let member = message.member;
 
-      let member = null;
-      let user = null;
-      let targetId = message.author.id;
-
-      if (!targetRaw && !message.mentions.users.size) {
-        member = message.member;
-        user = message.author;
-        targetId = message.author.id;
-      } else {
-        const fetchedMember = await fetchMember(message.guild, targetRaw, message);
-        if (fetchedMember) {
-          member = fetchedMember;
-          user = fetchedMember.user;
-          targetId = fetchedMember.id;
-        } else {
-          const possibleId =
-            (message.mentions.users.first()?.id) ||
-            extractIdFromMention(targetRaw) ||
-            (/^\d{17,20}$/.test(targetRaw) ? targetRaw : null);
-
-          if (possibleId) {
-            try {
-              user = await message.client.users.fetch(possibleId);
-              targetId = possibleId;
-            } catch {}
-          }
-
-          if (!user) {
-            await sendNoPing(message.channel, {
-              embeds: [redPanel('لم أستطع العثور على العضو/المستخدم.')]
-            });
-            return;
-          }
+      if (targetRaw) {
+        const fetchedMember = await fetchMember(message.guild, targetRaw);
+        if (!fetchedMember) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
         }
+        if (!fetchedMember.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
+          await sendNoPing(message.channel, { embeds: [redPanel('هذا العضو ليس إدارياً.')] });
+          return;
+        }
+        member = fetchedMember;
       }
 
-      const doc = await getOrCreate(message.guild.id, targetId);
-      const userXpDoc = await UserXP.findOne({
-        guildId: message.guild.id,
-        userId: targetId
-      });
+      const doc = await getOrCreate(message.guild.id, member.id);
 
+      const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: member.id });
       const totalUserXp = userXpDoc
         ? (userXpDoc.textXp || 0) + (userXpDoc.voiceXp || 0)
         : 0;
 
-      const multiplier = member ? getMultiplier(member) : 1;
       const nextCfg = getNextLevelConfig(doc.level);
+      const multiplier = getMultiplier(member);
       const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-      const avatarURL =
-        (member?.displayAvatarURL?.({ size: 256 })) ||
-        (user?.displayAvatarURL?.({ size: 256 })) ||
-        message.guild.iconURL({ dynamic: true });
 
       const embed = new EmbedBuilder()
         .setColor(0xff0000)
         .setAuthor({
-          name: `بطاقة العضو - ${user?.tag || targetId}`,
-          iconURL: avatarURL
+          name: `بطاقة الإداري - ${member.user.tag}`,
+          iconURL:
+            member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
         })
         .addFields(
-          { name: '👤 العضو', value: `**<@${targetId}>**`, inline: true },
           {
-            name: '🛡️ الحالة',
-            value: member
-              ? (member.roles.cache.has(SUPPORT_ROLE_ID) ? '**ضمن فريق الدعم**' : '**عضو عادي**')
-              : '**خارج السيرفر/غير متاح كعضو**',
+            name: '👤 الإداري',
+            value: `**<@${member.id}>**`,
             inline: true
           },
           {
@@ -638,13 +581,21 @@ module.exports = {
             }`,
             inline: true
           },
-          { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+          {
+            name: '🎚️ المضاعف الحالي',
+            value: `**x${multiplier.toFixed(2)}**`,
+            inline: true
+          },
           {
             name: '🎟️ نقاطك الحالية',
             value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
             inline: false
           },
-          { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
+          {
+            name: '📊 إجمالي XP (نصي + صوتي)',
+            value: `**${totalUserXp} XP**`,
+            inline: false
+          },
           {
             name: '📦 إجمالي مساهماتك',
             value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
@@ -681,7 +632,8 @@ module.exports = {
     if (isBreakCommand) {
       const guardKey = `${message.id}:break`;
       if (!markProcessed(guardKey)) return;
-      if (message.author.id !== OWNER_ID) return;
+
+      if (!hasAdminRankRole) return;
 
       const targetArg = tokens.shift();
       const reason = tokens.join(' ').trim();
@@ -699,39 +651,34 @@ module.exports = {
         return;
       }
 
-      if (!targetMember.roles.cache.has(SUPPORT_ROLE_ID)) {
+      if (!targetMember.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
         await sendNoPing(message.channel, { embeds: [redPanel('العضو ليس من الإدارة.')] });
         return;
       }
 
       try {
-        const result = await demoteOneLevel(message.guild, targetMember, { reason, byId: message.author.id });
-
-        try {
-          const dmEmbed = new EmbedBuilder()
-            .setColor(0xff0000)
-            .setTitle('⬇️ إشعار كسر رتبة')
-            .setDescription(
-              [
-                `**مرحباً <@${targetMember.id}>**`,
-                `تم كسر رتبتك مستوى واحد.`,
-                ``,
-                `**من:** ${result.fromName}`,
-                `**إلى:** ${result.toName}`,
-                `**السبب:** ${reason}`,
-                `**بواسطة:** <@${message.author.id}>`,
-                `**الرتب التي أُزيلت:** ${formatRoleMentions(result.removedRoles)}`,
-                `**الرتب الجديدة:** ${formatRoleMentions(result.addedRoles)}`
-              ].join('\n')
-            );
-          await targetMember.send({ embeds: [dmEmbed] });
-        } catch {}
+        const result = await demoteOneLevel(message.guild, targetMember, {
+          reason,
+          byId: message.author.id
+        });
 
         await sendNoPing(message.channel, {
-          embeds: [redPanel([`تم كسر رتبة <@${targetMember.id}> بنجاح.`, `**السبب:** ${reason}`, `**من:** ${result.fromName}`, `**إلى:** ${result.toName}`, `**الرتب المحذوفة:** ${formatRoleMentions(result.removedRoles)}`].join('\n'))]
+          embeds: [
+            redPanel(
+              [
+                `تم كسر رتبة <@${targetMember.id}> بنجاح.`,
+                `**السبب:** ${reason}`,
+                `**من:** ${result.fromName}`,
+                `**إلى:** ${result.toName}`,
+                `**الرتب المحذوفة:** ${formatRoleMentions(result.removedRoles)}`
+              ].join('\n')
+            )
+          ]
         });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err?.message || 'تعذر تنفيذ أمر كسر.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(err?.message || 'تعذر تنفيذ أمر كسر.')]
+        });
       }
       return;
     }
@@ -739,9 +686,11 @@ module.exports = {
     if (isConvertCommand) {
       const guardKey = `${message.id}:convert`;
       if (!markProcessed(guardKey)) return;
-      if (!hasSupportRole) return;
+
+      if (!hasAdminRankRole) return;
 
       let amountRaw, fromType, toType;
+
       if (tokens.length >= 3) {
         if (Number.isFinite(Number(tokens[0]))) {
           amountRaw = tokens[0];
@@ -756,14 +705,22 @@ module.exports = {
 
       if (!amountRaw || !fromType || !toType) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام الصحيح:\n`تبديل <الكمية> <من-نوع> <إلى-نوع>` أو `تبديل <من-نوع> <الكمية> <إلى-نوع>`\nمثال: `تبديل 20 تحذير xp` أو `تبديل تحذير 20 xp`')]
+          embeds: [
+            redPanel(
+              'الاستخدام الصحيح:\n' +
+                '`تبديل <الكمية> <من-نوع> <إلى-نوع>` أو `تبديل <من-نوع> <الكمية> <إلى-نوع>`\n' +
+                'مثال: `تبديل 20 تحذير xp` أو `تبديل تحذير 20 xp`'
+            )
+          ]
         });
         return;
       }
 
       const amount = Number(amountRaw);
       if (!Number.isFinite(amount) || amount <= 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')]
+        });
         return;
       }
 
@@ -774,18 +731,27 @@ module.exports = {
         const embed = greenPanel(
           [
             `**تم التبديل بنجاح!**`,
-            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}`,
-            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}`
+            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${
+              POINT_TYPE_LABELS[result.fromKey] || result.fromKey
+            }`,
+            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${
+              POINT_TYPE_LABELS[result.toKey] || result.toKey
+            }`
           ].join('\n'),
           '🔄 تبديل النقاط'
         ).setFooter({
-          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ size: 128 })
         });
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التبديل.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(err.message || 'فشل التبديل.')]
+        });
       }
       return;
     }
@@ -793,11 +759,18 @@ module.exports = {
     if (isTransferCommand) {
       const guardKey = `${message.id}:transfer`;
       if (!markProcessed(guardKey)) return;
-      if (!hasSupportRole) return;
+
+      if (!hasAdminRankRole) return;
 
       if (tokens.length < 3) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام الصحيح:\n`تحويل <نوع> <@عضو> <الكمية>`\nمثال: `تحويل تكت @User 50`')]
+          embeds: [
+            redPanel(
+              'الاستخدام الصحيح:\n' +
+                '`تحويل <نوع> <@عضو> <الكمية>`\n' +
+                'مثال: `تحويل تكت @User 50`'
+            )
+          ]
         });
         return;
       }
@@ -809,30 +782,43 @@ module.exports = {
       const pointType = normalizePointKey(typeArg);
       if (!pointType) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('نوع النقاط غير معروف.\nالأنواع: تكت / تحذير / xp (مع كل اختصاراتها).')]
+          embeds: [
+            redPanel(
+              'نوع النقاط غير معروف.\n' +
+                'الأنواع: تكت / تحذير / xp (مع كل اختصاراتها).'
+            )
+          ]
         });
         return;
       }
 
       const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')]
+        });
         return;
       }
 
       if (targetMember.id === message.author.id) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لا يمكنك تحويل نقاط لنفسك. استخدم أمر التبديل بدلاً من ذلك.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('لا يمكنك تحويل نقاط لنفسك. استخدم أمر التبديل بدلاً من ذلك.')]
+        });
         return;
       }
 
-      if (!targetMember.roles.cache.has(SUPPORT_ROLE_ID)) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لا يمكن التحويل لعضو ليس إدارياً.')] });
+      if (!targetMember.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('لا يمكن التحويل لعضو ليس إدارياً.')]
+        });
         return;
       }
 
       const amount = Number(amountArg);
       if (!Number.isFinite(amount) || amount <= 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')]
+        });
         return;
       }
 
@@ -852,13 +838,18 @@ module.exports = {
           ].join('\n'),
           '📤 تحويل النقاط'
         ).setFooter({
-          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ size: 128 })
         });
 
         await sendNoPing(message.channel, { embeds: [embed] });
       } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(err.message || 'فشل التحويل.')]
+        });
       }
       return;
     }
@@ -866,11 +857,17 @@ module.exports = {
     if (isEditCommand) {
       const guardKey = `${message.id}:edit`;
       if (!markProcessed(guardKey)) return;
+
       if (message.author.id !== OWNER_ID) return;
 
       if (tokens.length < 2) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام: `تعديل <نوع> <قيمة جديدة> [@عضو اختياري]`\nمثال: `تعديل تكت 1000` أو `تعديل xp @user 5000`')]
+          embeds: [
+            redPanel(
+              'الاستخدام: `تعديل <نوع> <قيمة جديدة> [@عضو اختياري]`\n' +
+                'مثال: `تعديل تكت 1000` أو `تعديل xp @user 5000`'
+            )
+          ]
         });
         return;
       }
@@ -881,13 +878,17 @@ module.exports = {
 
       const pointType = normalizePointKey(typeArg);
       if (!pointType) {
-        await sendNoPing(message.channel, { embeds: [redPanel('نوع غير معروف. استخدم: تكت / تحذير / xp (مع اختصاراتها).')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('نوع غير معروف. استخدم: تكت / تحذير / xp (مع اختصاراتها).')]
+        });
         return;
       }
 
       const amount = Number(amountArg);
       if (!Number.isFinite(amount) || amount < 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('القيمة يجب أن تكون رقم صالح (0 أو أكبر).')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('القيمة يجب أن تكون رقم صالح (0 أو أكبر).')]
+        });
         return;
       }
 
@@ -897,11 +898,15 @@ module.exports = {
       if (targetArg) {
         targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
-          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('لم أستطع العثور على العضو.')]
+          });
           return;
         }
-        if (!targetMember.roles.cache.has(SUPPORT_ROLE_ID)) {
-          await sendNoPing(message.channel, { embeds: [redPanel('العضو المستهدف ليس إدارياً.')] });
+        if (!targetMember.roles.cache.has(ADMIN_RANK_ROLE_ID)) {
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('العضو المستهدف ليس إدارياً.')]
+          });
           return;
         }
         targetId = targetMember.id;
@@ -918,7 +923,10 @@ module.exports = {
         `**تم تعيين ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetId}> إلى القيمة: ${amount}**`,
         '✏️ تعديل الإحصائيات'
       ).setFooter({
-        text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+        text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
+          dateStyle: 'medium',
+          timeStyle: 'short'
+        })}`,
         iconURL: message.author.displayAvatarURL({ size: 128 })
       });
 
@@ -930,27 +938,26 @@ module.exports = {
       const guardKey = `${message.id}:warn`;
       if (!markProcessed(guardKey)) return;
 
-      if (message.channel.id !== ADMIN_COMMANDS_CHANNEL_ID) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel(`أمر التحذير يعمل فقط في <#${ADMIN_COMMANDS_CHANNEL_ID}>`)]
-        });
-        return;
-      }
-
       if (!message.member.permissions.has(MOD_REQUIRED_PERM)) {
         await sendNoPing(message.channel, { embeds: [redPanel('لا تملك صلاحية تحذير الأعضاء.')] });
         return;
       }
 
+      if (!hasWarnRankRole) return;
+
       const targetArg = tokens.shift();
       if (!targetArg) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الرجاء تحديد العضو: `warn @user السبب`')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الرجاء تحديد العضو: `warn @user السبب`')]
+        });
         return;
       }
 
       const targetMember = await fetchMember(message.guild, targetArg);
       if (!targetMember) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('لم أستطع العثور على العضو. استخدم منشن أو آيدي صالح.')]
+        });
         return;
       }
 
@@ -968,17 +975,23 @@ module.exports = {
         message.guild.ownerId !== message.author.id &&
         message.member.roles.highest.position <= targetMember.roles.highest.position
       ) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لا يمكنك تحذير هذا العضو لأن رتبته أعلى أو مساوية لرتبتك.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('لا يمكنك تحذير هذا العضو لأن رتبته أعلى أو مساوية لرتبتك.')]
+        });
         return;
       }
 
       const reason = tokens.join(' ').trim();
       if (!reason) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الرجاء كتابة سبب التحذير.')] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('الرجاء كتابة سبب التحذير.')]
+        });
         return;
       }
 
-      if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) return;
+      if (isDuplicateWarnAction(message.guild.id, message.author.id, targetMember.id, reason)) {
+        return;
+      }
 
       await addWarningAndNotify(message, targetMember, reason);
       return;
@@ -988,12 +1001,7 @@ module.exports = {
       const guardKey = `${message.id}:warnings`;
       if (!markProcessed(guardKey)) return;
 
-      if (message.channel.id !== ADMIN_COMMANDS_CHANNEL_ID) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel(`أمر التحذيرات يعمل فقط في <#${ADMIN_COMMANDS_CHANNEL_ID}>`)]
-        });
-        return;
-      }
+      if (!hasWarnRankRole) return;
 
       const targetArg = tokens.join(' ').trim();
       const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
@@ -1011,20 +1019,28 @@ module.exports = {
       if (!markProcessed(guardKey, COOLDOWN)) return;
 
       if (!isTicketChannel) {
-        await sendManagedEmbedOnce(message.channel, 'claim-outside', { embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
+        await sendManagedEmbedOnce(message.channel, 'claim-outside', {
+          embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
+        });
         return;
       }
-      if (!hasSupportRole) {
-        await sendManagedEmbedOnce(message.channel, 'claim-no-role', { embeds: [redPanel('لا تملك صلاحيات الاستلام.')] });
+      if (!hasAdminRankRole) {
+        await sendManagedEmbedOnce(message.channel, 'claim-no-role', {
+          embeds: [redPanel('لا تملك صلاحيات الاستلام.')]
+        });
         return;
       }
 
       let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (ticketClaim) {
         if (ticketClaim.claimedById === message.author.id) {
-          await sendManagedEmbedOnce(message.channel, 'claim-self', { embeds: [redPanel('لقد استلمت هذه التذكرة بالفعل.')] });
+          await sendManagedEmbedOnce(message.channel, 'claim-self', {
+            embeds: [redPanel('لقد استلمت هذه التذكرة بالفعل.')]
+          });
         } else {
-          await sendManagedEmbedOnce(message.channel, 'claim-other', { embeds: [redPanel(`التذكرة مستلمة حالياً بواسطة <@${ticketClaim.claimedById}>.`)] });
+          await sendManagedEmbedOnce(message.channel, 'claim-other', {
+            embeds: [redPanel(`التذكرة مستلمة حالياً بواسطة <@${ticketClaim.claimedById}>.`)]
+          });
         }
         return;
       }
@@ -1047,8 +1063,8 @@ module.exports = {
       try {
         await AdminStats.findOneAndUpdate(
           { guildId: message.guild.id, adminId: message.author.id },
-          { $inc: { ticketsClaimed: 1, claimsCount: 1 } },
-          { upsert: true, new: true }
+          { $inc: { claimsCount: 1 } },
+          { upsert: true }
         );
       } catch (err) {
         console.error('Error updating admin stats:', err);
@@ -1065,21 +1081,29 @@ module.exports = {
       if (!markProcessed(guardKey, COOLDOWN)) return;
 
       if (!isTicketChannel) {
-        await sendManagedEmbedOnce(message.channel, 'unclaim-outside', { embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
+        await sendManagedEmbedOnce(message.channel, 'unclaim-outside', {
+          embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
+        });
         return;
       }
-      if (!hasSupportRole) {
-        await sendManagedEmbedOnce(message.channel, 'unclaim-no-role', { embeds: [redPanel('لا تملك صلاحيات الإلغاء.')] });
+      if (!hasAdminRankRole) {
+        await sendManagedEmbedOnce(message.channel, 'unclaim-no-role', {
+          embeds: [redPanel('لا تملك صلاحيات الإلغاء.')]
+        });
         return;
       }
 
       const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
       if (!ticketClaim) {
-        await sendManagedEmbedOnce(message.channel, 'unclaim-empty', { embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')] });
+        await sendManagedEmbedOnce(message.channel, 'unclaim-empty', {
+          embeds: [redPanel('لا يوجد استلام مرتبط بهذه التذكرة.')]
+        });
         return;
       }
       if (ticketClaim.claimedById !== message.author.id) {
-        await sendManagedEmbedOnce(message.channel, 'unclaim-other', { embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)] });
+        await sendManagedEmbedOnce(message.channel, 'unclaim-other', {
+          embeds: [redPanel(`لا يمكنك إلغاء استلام شخص آخر (<@${ticketClaim.claimedById}>).`)]
+        });
         return;
       }
 
@@ -1150,28 +1174,49 @@ module.exports = {
         .setColor(0xff0000)
         .setAuthor({
           name: `لوحة XP - ${message.guild.name}`,
-          iconURL: message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
+          iconURL:
+            message.guild.iconURL({ dynamic: true }) || message.client.user.displayAvatarURL()
         })
         .addFields(
-          { name: '🏅 مستواك', value: `**Level ${userXp.level} • ${userXp.totalXp} XP**`, inline: true },
+          {
+            name: '🏅 مستواك',
+            value: `**Level ${userXp.level} • ${userXp.totalXp} XP**`,
+            inline: true
+          },
           {
             name: '📊 ترتيبك',
-            value: rankIndex >= 0 && totalRanked > 0 ? `**#${rankPosition} من ${totalRanked}**` : `**خارج الترتيب الحالي**`,
+            value:
+              rankIndex >= 0 && totalRanked > 0
+                ? `**#${rankPosition} من ${totalRanked}**`
+                : `**خارج الترتيب الحالي**`,
             inline: true
           },
           {
             name: '📝 خبرة كتابية',
-            value: [`**الإجمالي:** ${userXp.textXp} XP`, `**اليومي:** ${userXp.dailyTextXp} XP`, `**الأسبوعي:** ${userXp.weeklyTextXp} XP`, `**الشهري:** ${userXp.monthlyTextXp} XP`].join('\n'),
+            value: [
+              `**الإجمالي:** ${userXp.textXp} XP`,
+              `**اليومي:** ${userXp.dailyTextXp} XP`,
+              `**الأسبوعي:** ${userXp.weeklyTextXp} XP`,
+              `**الشهري:** ${userXp.monthlyTextXp} XP`
+            ].join('\n'),
             inline: false
           },
           {
             name: '🎙️ خبرة صوتية',
-            value: [`**الإجمالي:** ${userXp.voiceXp} XP`, `**اليومي:** ${userXp.dailyVoiceXp} XP`, `**الأسبوعي:** ${userXp.weeklyVoiceXp} XP`, `**الشهري:** ${userXp.monthlyVoiceXp} XP`].join('\n'),
+            value: [
+              `**الإجمالي:** ${userXp.voiceXp} XP`,
+              `**اليومي:** ${userXp.dailyVoiceXp} XP`,
+              `**الأسبوعي:** ${userXp.weeklyVoiceXp} XP`,
+              `**الشهري:** ${userXp.monthlyVoiceXp} XP`
+            ].join('\n'),
             inline: false
           }
         )
         .setFooter({
-          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
@@ -1188,13 +1233,17 @@ module.exports = {
 
       if (!scope) {
         await sendNoPing(message.channel, {
-          embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all` (أو المكافئ بالعربي).')]
+          embeds: [
+            redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all` (أو المكافئ بالعربي).')
+          ]
         });
         return;
       }
 
       const topReplyTag = `top:${scope}:${message.author.id}`;
-      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) return;
+      if (!shouldSendManagedReply(message.channel.id, topReplyTag, TOP_REPLY_TTL)) {
+        return;
+      }
 
       const now = Date.now();
       const docs = await UserXP.find({ guildId: message.guild.id });
@@ -1219,10 +1268,14 @@ module.exports = {
       const nonZeroRows = rankedRows.filter(row => row.totalXp > 0);
       const topRows = nonZeroRows.slice(0, TOP_LIMIT);
 
-      if (scope !== 'all' && dirtyWrites.length) Promise.allSettled(dirtyWrites).catch(() => {});
+      if (scope !== 'all' && dirtyWrites.length) {
+        Promise.allSettled(dirtyWrites).catch(() => {});
+      }
 
       if (!nonZeroRows.length) {
-        await sendNoPing(message.channel, { embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)] });
+        await sendNoPing(message.channel, {
+          embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)]
+        });
         return;
       }
 
@@ -1242,9 +1295,14 @@ module.exports = {
         .setColor(0xff0000)
         .setAuthor({
           name: `قائمة متصدرين السيرفر - ${scopeLabel(scope)}`,
-          iconURL: message.guild.iconURL({ dynamic: true, size: 256 }) || message.client.user.displayAvatarURL()
+          iconURL:
+            message.guild.iconURL({ dynamic: true, size: 256 }) ||
+            message.client.user.displayAvatarURL()
         })
-        .setThumbnail(message.guild.iconURL({ dynamic: true, size: 512 }) || message.client.user.displayAvatarURL())
+        .setThumbnail(
+          message.guild.iconURL({ dynamic: true, size: 512 }) ||
+            message.client.user.displayAvatarURL()
+        )
         .addFields(
           { name: '🏆 المتصدرون', value: mainList || '**لا توجد بيانات.**', inline: false },
           { name: '📌 ترتيبك الحالي', value: myRankValue, inline: false },
@@ -1252,7 +1310,10 @@ module.exports = {
           { name: '🎙️ Top Voice XP', value: formatTopField(topRows, 'voiceXp'), inline: true }
         )
         .setFooter({
-          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', { dateStyle: 'medium', timeStyle: 'short' })}`,
+          text: `${message.author.username} • ${new Date().toLocaleString('ar-SA', {
+            dateStyle: 'medium',
+            timeStyle: 'short'
+          })}`,
           iconURL: message.author.displayAvatarURL({ dynamic: true })
         });
 
