@@ -3,7 +3,7 @@ const { Schema, model } = require('mongoose');
 const AdminProfileSchema = new Schema(
   {
     guildId: { type: String, required: true, index: true },
-    userId: { type: String, required: true, index: true, unique: true },
+    userId: { type: String, required: true, index: true },
 
     username: { type: String, default: '' },
     tag: { type: String, default: '' },
@@ -13,7 +13,6 @@ const AdminProfileSchema = new Schema(
     avatarURL: { type: String, default: '' },
     isAdmin: { type: Boolean, default: false },
 
-    // نخزن أسماء سابقة للبحث المرن
     aliases: { type: [String], default: [] },
 
     lastSeenAt: { type: Date, default: Date.now }
@@ -22,5 +21,6 @@ const AdminProfileSchema = new Schema(
 );
 
 AdminProfileSchema.index({ guildId: 1, userId: 1 }, { unique: true });
+AdminProfileSchema.index({ guildId: 1, aliases: 1 });
 
 module.exports = model('AdminProfile', AdminProfileSchema);
