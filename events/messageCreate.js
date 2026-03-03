@@ -13,7 +13,8 @@ const {
   WARN_COMMAND_CHANNEL_IDS,
   PANEL_LINE_IMAGE_URL,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
-  LEVEL_CONFIGS
+  LEVEL_CONFIGS,
+  AUTO_PROMOTE_ON_DEMOTE
 } = require('../config/adminProgressConfig');
 const {
   getOrCreate,
@@ -505,7 +506,7 @@ module.exports = {
     const isXpCommand = XP_ALIASES.includes(command);
     const isTopCommand = TOP_ALIASES.includes(command);
     const isTasksCommand = ALIASES.TASKS.includes(command);
-    const isStatsCommand = ALIASES.STATS.includes(command);
+    const isStatsCommand = ALIASES.STATS.includes(command); // تم تعديله ليكون عامًا
     const isConvertCommand = ALIASES.CONVERT.includes(command);
     const isTransferCommand = ALIASES.TRANSFER.includes(command);
     const isEditCommand = EDIT_ALIASES.includes(command);
@@ -542,6 +543,7 @@ module.exports = {
       const guardKey = `${message.id}:tasks`;
       if (!markProcessed(guardKey)) return;
 
+      // فقط الإداريين + فقط شات التحذير
       if (!isAdminMember(message.member)) return;
 
       // مزامنة المستوى حسب الرتب الحالية + محاولة ترقية فورية لو مكتمل
@@ -598,10 +600,7 @@ module.exports = {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
 
-      // فقط الإداريين + فقط شات التحذير
-      if (!isAdminMember(message.member)) return;
-      if (!inWarnChannel) return;
-
+      // لا يعتمد على رتبة "إداري" → يعمل لأي شخص
       const targetRaw = tokens.join(' ').trim();
       let member = message.member;
 
@@ -611,13 +610,10 @@ module.exports = {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
         }
-        if (!isAdminMember(fetchedMember)) {
-          await sendNoPing(message.channel, { embeds: [redPanel('هذا العضو ليس إدارياً.')] });
-          return;
-        }
         member = fetchedMember;
       }
 
+      // جلب بيانات الإداري (إن وجد)
       const doc = await getOrCreate(message.guild.id, member.id);
       await syncDocLevelWithMemberRoles(member, doc);
 
@@ -706,11 +702,7 @@ module.exports = {
         return;
       }
 
-      if (!isAdminMember(targetMember)) {
-        await sendNoPing(message.channel, { embeds: [redPanel('العضو ليس من الإدارة.')] });
-        return;
-      }
-
+      // لا يشترط أن يكون إداريًا
       try {
         const result = await demoteOneLevel(message.guild, targetMember, {
           reason,
@@ -727,7 +719,7 @@ module.exports = {
               `**إلى:** ${result.toName}`,
               `**السبب:** ${reason}`,
               `**بواسطة:** <@${message.author.id}>`,
-              `**الرتب التي أزيلت:** ${formatRoleMentions(result.removedRoles)}`,
+              `**الرتب التي أُزيلت:** ${formatRoleMentions(result.removedRoles)}`,
               `**الرتب المضافة:** ${formatRoleMentions(result.addedRoles)}`
             ].join('\n')
           )
@@ -859,11 +851,7 @@ module.exports = {
         return;
       }
 
-      if (!isAdminMember(targetMember)) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لا يمكن التحويل لعضو ليس إدارياً.')] });
-        return;
-      }
-
+      // لا يشترط أن يكون الهدف إداريًا
       const amount = Number(amountArg);
       if (!Number.isFinite(amount) || amount <= 0) {
         await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
@@ -929,11 +917,7 @@ module.exports = {
         return;
       }
 
-      if (!isAdminMember(targetMember)) {
-        await sendNoPing(message.channel, { embeds: [redPanel('العضو المستهدف ليس إدارياً.')] });
-        return;
-      }
-
+      // لا يشترط أن يكون الهدف إداريًا
       if (!Number.isFinite(amount) || amount < 0) {
         await sendNoPing(message.channel, { embeds: [redPanel('القيمة يجب أن تكون رقم صالح (0 أو أكبر).')] });
         return;
