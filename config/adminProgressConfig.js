@@ -1,6 +1,6 @@
 // config/adminProgressConfig.js
 const SUPPORT_ROLE_ID = '1445473101629493383';
-const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473082180501655'; 
+const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473082180501655';
 const WARN_ALLOWED_ROLE_ID = '1445473101629493383';
 const WARN_COMMAND_CHANNEL_IDS = ['1463931942058852399'];
 const PROMOTION_ANNOUNCE_CHANNEL_ID = '1463932101496799252';
@@ -56,7 +56,8 @@ module.exports = {
 
   ALIASES: {
     TASKS: ['المهام', 'مهام', 'tasks', 'task', 'مهمة'],
-    STATS: ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'],
+    // أضفت "اساتات" هنا
+    STATS: ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'],
     CONVERT: ['تبديل', 'بدل', 'exchange', 'swap', 'switch', 'convert', 'تحويل_نوع'],
     TRANSFER: ['تحويل', 'حول', 'transfer', 'send', 'تحويل_نقاط'],
     EDIT: ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل']
