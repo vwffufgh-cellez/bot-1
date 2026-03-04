@@ -52,9 +52,10 @@ const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_ALIASES = ['t', 'top', 'توب'];
 const BREAK_ALIASES = ['كسر', 'break', 'demote', 'down'];
 
-const STATS_ALIASES = Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
-  ? ALIASES.STATS
-  : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
+const STATS_ALIASES =
+  Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
+    ? ALIASES.STATS
+    : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
 
 // أمر التعديل
 const EDIT_ALIASES = ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل'];
@@ -171,16 +172,9 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
 const extractIdFromMention = arg => {
   if (!arg) return null;
   const raw = String(arg).trim();
-
-  const mentionMatch = raw.match(/^<@!?(\d+)>$/);
-  if (mentionMatch) return mentionMatch[1];
-
+  const match = raw.match(/^<@!?(\d+)>$/);
+  if (match) return match[1];
   if (/^\d{15,21}$/.test(raw)) return raw;
-
-  // تنظيف لو فيه رموز مخفية/زائدة
-  const cleanedDigits = raw.replace(/[^\d]/g, '');
-  if (/^\d{15,21}$/.test(cleanedDigits)) return cleanedDigits;
-
   return null;
 };
 
@@ -189,6 +183,7 @@ const fetchMember = async (guild, arg) => {
   const raw = String(arg).trim();
   if (!raw) return null;
 
+  // 1) mention أو id مباشر
   const id = extractIdFromMention(raw);
   if (id) {
     try {
@@ -202,6 +197,21 @@ const fetchMember = async (guild, arg) => {
     }
   }
 
+  // 2) تنظيف أي رموز حول الأرقام (اختياري/مفيد)
+  const cleaned = raw.replace(/[^\d]/g, '');
+  if (/^\d{15,21}$/.test(cleaned)) {
+    try {
+      return await guild.members.fetch({ user: cleaned, force: true });
+    } catch {
+      try {
+        return await guild.members.fetch(cleaned);
+      } catch {
+        return null;
+      }
+    }
+  }
+
+  // 3) مطابقة اسم/تاغ/ديسبلاي نيم بشكل دقيق
   const normalized = raw.toLowerCase();
 
   try {
@@ -215,6 +225,7 @@ const fetchMember = async (guild, arg) => {
 
   if (found) return found;
 
+  // 4) Query بدون fallback عشوائي
   try {
     const queried = await guild.members.fetch({ query: raw, limit: 50 });
     found =
@@ -488,6 +499,8 @@ function formatProgress(current, required) {
   return `${current}/${required} (${pct}%)`;
 }
 
+const includesAlias = (arr, command) => Array.isArray(arr) && arr.includes(command);
+
 module.exports = {
   name: Events.MessageCreate,
   async execute(message) {
@@ -518,10 +531,10 @@ module.exports = {
       const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
       const isXpCommand = XP_ALIASES.includes(command);
       const isTopCommand = TOP_ALIASES.includes(command);
-      const isTasksCommand = ALIASES.TASKS.includes(command);
+      const isTasksCommand = includesAlias(ALIASES?.TASKS, command);
       const isStatsCommand = STATS_ALIASES.includes(command);
-      const isConvertCommand = ALIASES.CONVERT.includes(command);
-      const isTransferCommand = ALIASES.TRANSFER.includes(command);
+      const isConvertCommand = includesAlias(ALIASES?.CONVERT, command);
+      const isTransferCommand = includesAlias(ALIASES?.TRANSFER, command);
       const isEditCommand = EDIT_ALIASES.includes(command);
       const isBreakCommand = BREAK_ALIASES.includes(command);
 
@@ -611,9 +624,10 @@ module.exports = {
         const guardKey = `${message.id}:stats`;
         if (!markProcessed(guardKey)) return;
 
-        // FIX: أخذ كامل الوسيط بدل كلمة وحدة
+        // ✅ إصلاح: أخذ كل الوسيط، مو كلمة واحدة
         const targetArg = tokens.join(' ').trim();
         const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -1058,8 +1072,9 @@ module.exports = {
         if (!ticketClaim) return;
         if (ticketClaim.claimedById !== message.author.id) return;
 
-        // FIX: كان message.id وهذا خطأ
+        // ✅ إصلاح: كان message.id
         await TicketClaim.deleteOne({ channelId: message.channel.id });
+
         await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
           embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
         });
