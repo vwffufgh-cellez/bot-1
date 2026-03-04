@@ -241,135 +241,139 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {})
 }
 
 async function tryPromote(_context, member, options = {}) {
-  if (!member?.guild) return { promoted: false };
+  try {
+    if (!member?.guild) return { promoted: false };
 
-  const announceInChannel = options.announceInChannel ?? true;
-  const dmOnPromote = options.dmOnPromote ?? true;
-  const skipRoleSync = options.skipRoleSync ?? false;
+    const announceInChannel = options.announceInChannel ?? true;
+    const dmOnPromote = options.dmOnPromote ?? true;
+    const skipRoleSync = options.skipRoleSync ?? false;
 
-  const guild = member.guild;
-  const doc = await getOrCreate(guild.id, member.id);
+    const guild = member.guild;
+    const doc = await getOrCreate(guild.id, member.id);
 
-  if (!skipRoleSync) {
-    await syncDocLevelWithMemberRoles(member, doc);
-  }
+    if (!skipRoleSync) {
+      await syncDocLevelWithMemberRoles(member, doc);
+    }
 
-  const multiplier = getMultiplier(member);
-  const startingLevel = doc.level;
-  let promotedCount = 0;
-  const consumed = { tickets: 0, warns: 0, xp: 0 };
+    const multiplier = getMultiplier(member);
+    const startingLevel = doc.level;
+    let promotedCount = 0;
+    const consumed = { tickets: 0, warns: 0, xp: 0 };
 
-  while (true) {
-    const nextCfg = getNextLevelConfig(doc.level);
-    if (!nextCfg) break;
+    while (true) {
+      const nextCfg = getNextLevelConfig(doc.level);
+      if (!nextCfg) break;
 
-    const nextReq = scaledReq(nextCfg.req, multiplier);
-    if (!nextReq) break;
+      const nextReq = scaledReq(nextCfg.req, multiplier);
+      if (!nextReq) break;
 
-    const canPromote =
-      (doc.points.tickets || 0) >= (nextReq.tickets || 0) &&
-      (doc.points.warns || 0) >= (nextReq.warns || 0) &&
-      (doc.points.xp || 0) >= (nextReq.xp || 0);
+      const canPromote =
+        (doc.points.tickets || 0) >= (nextReq.tickets || 0) &&
+        (doc.points.warns || 0) >= (nextReq.warns || 0) &&
+        (doc.points.xp || 0) >= (nextReq.xp || 0);
 
-    if (!canPromote) break;
+      if (!canPromote) break;
 
-    doc.points.tickets -= nextReq.tickets || 0;
-    doc.points.warns -= nextReq.warns || 0;
-    doc.points.xp -= nextReq.xp || 0;
+      doc.points.tickets -= nextReq.tickets || 0;
+      doc.points.warns -= nextReq.warns || 0;
+      doc.points.xp -= nextReq.xp || 0;
 
-    consumed.tickets += nextReq.tickets || 0;
-    consumed.warns += nextReq.warns || 0;
-    consumed.xp += nextReq.xp || 0;
+      consumed.tickets += nextReq.tickets || 0;
+      consumed.warns += nextReq.warns || 0;
+      consumed.xp += nextReq.xp || 0;
 
-    doc.level += 1;
-    doc.promotedAt = new Date();
-    promotedCount += 1;
-  }
+      doc.level += 1;
+      doc.promotedAt = new Date();
+      promotedCount += 1;
+    }
 
-  if (!promotedCount) return { promoted: false };
+    if (!promotedCount) return { promoted: false };
 
-  await doc.save();
+    await doc.save();
 
-  const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
-    member,
-    startingLevel,
-    doc.level,
-    { mode: 'promote' }
-  );
+    const { removedRoles, addedRoles, fromCfg, toCfg } = await syncMemberRolesForLevel(
+      member,
+      startingLevel,
+      doc.level,
+      { mode: 'promote' }
+    );
 
-  const oldLevelName = fromCfg?.name || `Level ${startingLevel}`;
-  const newLevelName = toCfg?.name || `Level ${doc.level}`;
+    const oldLevelName = fromCfg?.name || `Level ${startingLevel}`;
+    const newLevelName = toCfg?.name || `Level ${doc.level}`;
 
-  const promoteEmbed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle('🚀 ترقية إداري')
-    .setDescription(
-      [
-        `**الإداري:** <@${member.id}>`,
-        `**من مستوى:** ${startingLevel}`,
-        `**إلى مستوى:** ${doc.level}`,
-        `**الرتبة السابقة:** ${oldLevelName}`,
-        `**الرتبة الجديدة:** ${newLevelName}`,
-        '',
-        `**رتب التحذير التي أُزيلت:** ${roleMentions(removedRoles)}`,
-        `**الرتب المضافة:** ${roleMentions(addedRoles)}`,
-        '',
-        `**المطلوب المخصوم خلال الترقية:**`,
-        `🎟️ تذاكر: ${consumed.tickets}`,
-        `⚠️ تحذيرات: ${consumed.warns}`,
-        `✨ XP: ${consumed.xp}`
-      ].join('\n')
-    )
-    .setFooter({
-      text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
-      iconURL: member.displayAvatarURL({ size: 128 })
-    });
+    const promoteEmbed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle('🚀 ترقية إداري')
+      .setDescription(
+        [
+          `**الإداري:** <@${member.id}>`,
+          `**من مستوى:** ${startingLevel}`,
+          `**إلى مستوى:** ${doc.level}`,
+          `**الرتبة السابقة:** ${oldLevelName}`,
+          `**الرتبة الجديدة:** ${newLevelName}`,
+          '',
+          `**رتب التحذير التي أُزيلت:** ${roleMentions(removedRoles)}`,
+          `**الرتب المضافة:** ${roleMentions(addedRoles)}`,
+          '',
+          `**المطلوب المخصوم خلال الترقية:**`,
+          `🎟️ تذاكر: ${consumed.tickets}`,
+          `⚠️ تحذيرات: ${consumed.warns}`,
+          `✨ XP: ${consumed.xp}`
+        ].join('\n')
+      )
+      .setFooter({
+        text: `${member.user.tag} • ${new Date().toLocaleString('ar-SA')}`,
+        iconURL: member.displayAvatarURL({ size: 128 })
+      });
 
-  if (announceInChannel) {
-    const announceChannel = guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
-    if (announceChannel) {
-      try {
-        await announceChannel.send({
-          content: `<@&${SUPPORT_ROLE_ID}>`,
-          allowedMentions: { roles: [SUPPORT_ROLE_ID] },
-          embeds: [promoteEmbed]
-        });
-        if (PANEL_LINE_IMAGE_URL) {
-          await announceChannel.send({ content: PANEL_LINE_IMAGE_URL, allowedMentions: { parse: [] } });
+    if (announceInChannel) {
+      const announceChannel = guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
+      if (announceChannel) {
+        try {
+          await announceChannel.send({
+            content: `<@&${SUPPORT_ROLE_ID}>`,
+            allowedMentions: { roles: [SUPPORT_ROLE_ID] },
+            embeds: [promoteEmbed]
+          });
+          if (PANEL_LINE_IMAGE_URL) {
+            await announceChannel.send({ content: PANEL_LINE_IMAGE_URL, allowedMentions: { parse: [] } });
+          }
+        } catch (err) {
+          console.error('Error sending promotion announcement:', err);
         }
-      } catch (err) {
-        console.error('Error sending promotion announcement:', err);
       }
     }
+
+    if (dmOnPromote) {
+      try {
+        const dmEmbed = new EmbedBuilder()
+          .setColor(0xff0000)
+          .setTitle('🎉 مبروك لقد ترقيت')
+          .setDescription(
+            [
+              `**<@${member.id}>**`,
+              `تمت ترقيتك بنجاح.`,
+              `**من:** ${oldLevelName}`,
+              `**إلى:** ${newLevelName}`
+            ].join('\n')
+          );
+        await member.send({ embeds: [dmEmbed] });
+      } catch {}
+    }
+
+    return {
+      promoted: true,
+      fromLevel: startingLevel,
+      toLevel: doc.level,
+      fromName: oldLevelName,
+      toName: newLevelName,
+      removedRoles,
+      addedRoles
+    };
+  } catch (err) {
+    console.error('tryPromote fatal error:', err);
+    return { promoted: false, error: err?.message || 'unknown error' };
   }
-
-  if (dmOnPromote) {
-    try {
-      const dmEmbed = new EmbedBuilder()
-        .setColor(0xff0000)
-        .setTitle('🎉 مبروك لقد ترقيت')
-        .setDescription(
-          [
-            `**<@${member.id}>**`,
-            `تمت ترقيتك بنجاح.`,
-            `**من:** ${oldLevelName}`,
-            `**إلى:** ${newLevelName}`
-          ].join('\n')
-        );
-      await member.send({ embeds: [dmEmbed] });
-    } catch {}
-
-  }
-
-  return {
-    promoted: true,
-    fromLevel: startingLevel,
-    toLevel: doc.level,
-    fromName: oldLevelName,
-    toName: newLevelName,
-    removedRoles,
-    addedRoles
-  };
 }
 
 async function forcePromote(context, member, options = {}) {
