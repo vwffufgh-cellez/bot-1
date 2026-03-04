@@ -170,9 +170,17 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
 
 const extractIdFromMention = arg => {
   if (!arg) return null;
-  const match = String(arg).match(/^<@!?(\d+)>$/);
-  if (match) return match[1];
-  if (/^\d{15,21}$/.test(String(arg))) return String(arg);
+  const raw = String(arg).trim();
+
+  const mentionMatch = raw.match(/^<@!?(\d+)>$/);
+  if (mentionMatch) return mentionMatch[1];
+
+  if (/^\d{15,21}$/.test(raw)) return raw;
+
+  // تنظيف لو فيه رموز مخفية/زائدة
+  const cleanedDigits = raw.replace(/[^\d]/g, '');
+  if (/^\d{15,21}$/.test(cleanedDigits)) return cleanedDigits;
+
   return null;
 };
 
@@ -212,8 +220,8 @@ const fetchMember = async (guild, arg) => {
     found =
       queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
       queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
-      queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
-      queried.first();
+      queried.find(m => (m.displayName || '').toLowerCase() === normalized);
+
     if (found) return found;
   } catch {}
 
@@ -599,77 +607,78 @@ module.exports = {
         return;
       }
 
-if (isStatsCommand) {
-      const guardKey = `${message.id}:stats`;
-      if (!markProcessed(guardKey)) return;
+      if (isStatsCommand) {
+        const guardKey = `${message.id}:stats`;
+        if (!markProcessed(guardKey)) return;
 
-      const targetArg = tokens.shift();
-      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
-      if (!member) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+        // FIX: أخذ كامل الوسيط بدل كلمة وحدة
+        const targetArg = tokens.join(' ').trim();
+        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        if (!member) {
+          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+          return;
+        }
+
+        const doc = await getOrCreate(message.guild.id, member.id);
+        const nextCfg = getNextLevelConfig(doc.level);
+        const multiplier = getMultiplier(member);
+        const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+        const embed = new EmbedBuilder()
+          .setColor(0x0099ff)
+          .setAuthor({
+            name: `بطاقة الإداري - ${member.user.tag}`,
+            iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
+          })
+          .addFields(
+            {
+              name: '🔢 المستوى الحالي',
+              value: `**Level ${doc.level}**${doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''}`,
+              inline: true
+            },
+            {
+              name: '🎚️ المضاعف الحالي',
+              value: `**x${multiplier.toFixed(2)}**`,
+              inline: true
+            },
+            {
+              name: '🎟️ نقاطك الحالية',
+              value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
+              inline: false
+            },
+            {
+              name: '📦 إجمالي مساهماتك',
+              value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
+              inline: false
+            }
+          )
+          .setFooter({
+            text: `بناءً على طلب ${message.author.tag}`,
+            iconURL: message.author.displayAvatarURL({ size: 128 })
+          });
+
+        if (nextReq) {
+          embed.addFields({
+            name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
+            value: [
+              `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
+              `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
+              `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
+            ].join('\n'),
+            inline: false
+          });
+        } else {
+          embed.addFields({
+            name: '🚀 الترقية القادمة',
+            value: '**أنت في أعلى مستوى متاح حالياً.**',
+            inline: false
+          });
+        }
+
+        await sendNoPing(message.channel, { embeds: [embed] });
         return;
       }
 
-      const doc = await getOrCreate(message.guild.id, member.id);
-      const nextCfg = getNextLevelConfig(doc.level);
-      const multiplier = getMultiplier(member);
-      const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x0099ff)
-        .setAuthor({
-          name: `بطاقة الإداري - ${member.user.tag}`,
-          iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
-        })
-        .addFields(
-          {
-            name: '🔢 المستوى الحالي',
-            value: `**Level ${doc.level}**${doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''}`,
-            inline: true
-          },
-          {
-            name: '🎚️ المضاعف الحالي',
-            value: `**x${multiplier.toFixed(2)}**`,
-            inline: true
-          },
-          {
-            name: '🎟️ نقاطك الحالية',
-            value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-            inline: false
-          },
-          {
-            name: '📦 إجمالي مساهماتك',
-            value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
-            inline: false
-          }
-        )
-        .setFooter({
-          text: `بناءً على طلب ${message.author.tag}`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
-
-      if (nextReq) {
-        embed.addFields({
-          name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-          value: [
-            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-          ].join('\n'),
-          inline: false
-        });
-      } else {
-        embed.addFields({
-          name: '🚀 الترقية القادمة',
-          value: '**أنت في أعلى مستوى متاح حالياً.**',
-          inline: false
-        });
-      }
-
-      await sendNoPing(message.channel, { embeds: [embed] });
-      return;
-    }
-      
       if (isBreakCommand) {
         const guardKey = `${message.id}:break`;
         if (!markProcessed(guardKey)) return;
@@ -1049,7 +1058,8 @@ if (isStatsCommand) {
         if (!ticketClaim) return;
         if (ticketClaim.claimedById !== message.author.id) return;
 
-        await TicketClaim.deleteOne({ channelId: message.id });
+        // FIX: كان message.id وهذا خطأ
+        await TicketClaim.deleteOne({ channelId: message.channel.id });
         await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
           embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
         });
