@@ -52,10 +52,9 @@ const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TOP_ALIASES = ['t', 'top', 'توب'];
 const BREAK_ALIASES = ['كسر', 'break', 'demote', 'down'];
 
-const STATS_ALIASES =
-  Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
-    ? ALIASES.STATS
-    : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
+const STATS_ALIASES = Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
+  ? ALIASES.STATS
+  : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
 
 // أمر التعديل
 const EDIT_ALIASES = ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل'];
@@ -172,9 +171,16 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
 const extractIdFromMention = arg => {
   if (!arg) return null;
   const raw = String(arg).trim();
-  const match = raw.match(/^<@!?(\d+)>$/);
-  if (match) return match[1];
+
+  const mentionMatch = raw.match(/^<@!?(\d+)>$/);
+  if (mentionMatch) return mentionMatch[1];
+
   if (/^\d{15,21}$/.test(raw)) return raw;
+
+  // تنظيف لو فيه رموز مخفية/زائدة
+  const cleanedDigits = raw.replace(/[^\d]/g, '');
+  if (/^\d{15,21}$/.test(cleanedDigits)) return cleanedDigits;
+
   return null;
 };
 
@@ -183,7 +189,6 @@ const fetchMember = async (guild, arg) => {
   const raw = String(arg).trim();
   if (!raw) return null;
 
-  // 1) mention أو id مباشر
   const id = extractIdFromMention(raw);
   if (id) {
     try {
@@ -197,21 +202,6 @@ const fetchMember = async (guild, arg) => {
     }
   }
 
-  // 2) تنظيف أي رموز حول الأرقام (اختياري/مفيد)
-  const cleaned = raw.replace(/[^\d]/g, '');
-  if (/^\d{15,21}$/.test(cleaned)) {
-    try {
-      return await guild.members.fetch({ user: cleaned, force: true });
-    } catch {
-      try {
-        return await guild.members.fetch(cleaned);
-      } catch {
-        return null;
-      }
-    }
-  }
-
-  // 3) مطابقة اسم/تاغ/ديسبلاي نيم بشكل دقيق
   const normalized = raw.toLowerCase();
 
   try {
@@ -225,7 +215,6 @@ const fetchMember = async (guild, arg) => {
 
   if (found) return found;
 
-  // 4) Query بدون fallback عشوائي
   try {
     const queried = await guild.members.fetch({ query: raw, limit: 50 });
     found =
@@ -499,8 +488,6 @@ function formatProgress(current, required) {
   return `${current}/${required} (${pct}%)`;
 }
 
-const includesAlias = (arr, command) => Array.isArray(arr) && arr.includes(command);
-
 module.exports = {
   name: Events.MessageCreate,
   async execute(message) {
@@ -518,25 +505,56 @@ module.exports = {
         await grantTextXp(message);
       }
 
+      // ===== command parse (safe + supports "command arg" and "arg command") =====
       const content = message.content.trim();
       if (!content.length) return;
 
-      const tokens = content.split(/\s+/);
-      let command = (tokens.shift() || '').trim();
-      command = command.replace(/^[!?.]+/, '').toLowerCase(); // يدعم !stats أو stats
+      let tokens = content.split(/\s+/).filter(Boolean);
+      if (!tokens.length) return;
 
-      const isWarnCommand = WARN_ALIASES.includes(command);
-      const isWarningsCommand = WARNINGS_ALIASES.includes(command);
-      const isClaimCommand = CLAIM_ALIASES.includes(command);
-      const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
-      const isXpCommand = XP_ALIASES.includes(command);
-      const isTopCommand = TOP_ALIASES.includes(command);
-      const isTasksCommand = includesAlias(ALIASES?.TASKS, command);
-      const isStatsCommand = STATS_ALIASES.includes(command);
-      const isConvertCommand = includesAlias(ALIASES?.CONVERT, command);
-      const isTransferCommand = includesAlias(ALIASES?.TRANSFER, command);
-      const isEditCommand = EDIT_ALIASES.includes(command);
-      const isBreakCommand = BREAK_ALIASES.includes(command);
+      const cleanCmd = s => String(s || '').replace(/^[!?.]+/, '').trim().toLowerCase();
+      const has = (arr, v) => Array.isArray(arr) && arr.includes(v);
+
+      const ALL_ALIASES = [
+        ...WARN_ALIASES,
+        ...WARNINGS_ALIASES,
+        ...CLAIM_ALIASES,
+        ...UNCLAIM_ALIASES,
+        ...XP_ALIASES,
+        ...TOP_ALIASES,
+        ...(Array.isArray(ALIASES?.TASKS) ? ALIASES.TASKS : []),
+        ...STATS_ALIASES,
+        ...(Array.isArray(ALIASES?.CONVERT) ? ALIASES.CONVERT : []),
+        ...(Array.isArray(ALIASES?.TRANSFER) ? ALIASES.TRANSFER : []),
+        ...EDIT_ALIASES,
+        ...BREAK_ALIASES
+      ];
+
+      // الوضع الطبيعي: أول كلمة أمر
+      let command = cleanCmd(tokens[0]);
+      let args = tokens.slice(1);
+
+      // دعم الصيغة العكسية: "arg command"
+      if (!ALL_ALIASES.includes(command) && tokens.length > 1) {
+        const lastAsCommand = cleanCmd(tokens[tokens.length - 1]);
+        if (ALL_ALIASES.includes(lastAsCommand)) {
+          command = lastAsCommand;
+          args = tokens.slice(0, -1);
+        }
+      }
+
+      const isWarnCommand = has(WARN_ALIASES, command);
+      const isWarningsCommand = has(WARNINGS_ALIASES, command);
+      const isClaimCommand = has(CLAIM_ALIASES, command);
+      const isUnclaimCommand = has(UNCLAIM_ALIASES, command);
+      const isXpCommand = has(XP_ALIASES, command);
+      const isTopCommand = has(TOP_ALIASES, command);
+      const isTasksCommand = has(ALIASES?.TASKS, command);
+      const isStatsCommand = has(STATS_ALIASES, command);
+      const isConvertCommand = has(ALIASES?.CONVERT, command);
+      const isTransferCommand = has(ALIASES?.TRANSFER, command);
+      const isEditCommand = has(EDIT_ALIASES, command);
+      const isBreakCommand = has(BREAK_ALIASES, command);
 
       if (
         !(
@@ -556,6 +574,9 @@ module.exports = {
       ) {
         return;
       }
+
+      // نخلي باقي الملف يشتغل كما هو باستخدام tokens
+      tokens = args;
 
       if (isDuplicateCommand(message)) return;
 
@@ -624,10 +645,9 @@ module.exports = {
         const guardKey = `${message.id}:stats`;
         if (!markProcessed(guardKey)) return;
 
-        // ✅ إصلاح: أخذ كل الوسيط، مو كلمة واحدة
+        // FIX: أخذ كامل الوسيط بدل كلمة وحدة
         const targetArg = tokens.join(' ').trim();
         const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
-
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -1072,9 +1092,8 @@ module.exports = {
         if (!ticketClaim) return;
         if (ticketClaim.claimedById !== message.author.id) return;
 
-        // ✅ إصلاح: كان message.id
+        // FIX: كان message.id وهذا خطأ
         await TicketClaim.deleteOne({ channelId: message.channel.id });
-
         await sendManagedEmbedOnce(message.channel, 'unclaim-success', {
           embeds: [redPanel(`✅ <@${message.author.id}> ألغى استلام التذكرة.`)]
         });
