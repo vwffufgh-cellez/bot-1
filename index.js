@@ -18,7 +18,7 @@ const client = new Client({
 // ================= MongoDB =================
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('MongoDB Connected'))
-  .catch(err => console.error(err));
+  .catch(err => console.error('MongoDB Error:', err));
 
 // ================= تحميل الأحداث =================
 const eventsPath = path.join(__dirname, 'events');
@@ -27,7 +27,12 @@ const eventFiles = fs.readdirSync(eventsPath).filter(file => file.endsWith('.js'
 for (const file of eventFiles) {
   const event = require(`./events/${file}`);
   console.log('[EVENT LOADED]', file, '=>', event.name);
-  client.on(event.name, (...args) => event.execute(...args, client));
+
+  if (event.once) {
+    client.once(event.name, (...args) => event.execute(...args, client));
+  } else {
+    client.on(event.name, (...args) => event.execute(...args, client));
+  }
 }
 
 // ================= Weekly Reset =================
@@ -66,6 +71,15 @@ cron.schedule('0 0 1 * *', async () => {
   } catch (err) {
     console.error('Monthly Reset Error:', err);
   }
+});
+
+// ================= Runtime Error Logs =================
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled Rejection:', reason);
+});
+
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
 });
 
 // ================= Ready =================
