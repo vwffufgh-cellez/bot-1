@@ -1,112 +1,185 @@
 // utils/resetHelpers.js
 const UserXP = require('../models/UserXP');
 
-// دوال مساعدة لإنشاء الطوابع الزمنية لبداية اليوم/الأسبوع/الشهر بتوقيت UTC
-const startOfDay = date => {
+// ===== Time Helpers (UTC) =====
+const startOfDay = (date = Date.now()) => {
   const d = new Date(date);
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime();
 };
-const startOfWeek = date => { // الأحد هو 0، نريد الأحد لبداية الأسبوع
+
+const startOfWeek = (date = Date.now()) => {
   const d = new Date(date);
-  const day = d.getUTCDay(); // 0 for Sunday, 1 for Monday, etc.
-  d.setUTCDate(d.getUTCDate() - day); // Adjust to the most recent Sunday
+  const day = d.getUTCDay(); // الأحد = 0
+  d.setUTCDate(d.getUTCDate() - day);
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime();
 };
-const startOfMonth = date => {
+
+const startOfMonth = (date = Date.now()) => {
   const d = new Date(date);
   d.setUTCDate(1);
   d.setUTCHours(0, 0, 0, 0);
   return d.getTime();
 };
 
-// وظيفة لتعيين قيم افتراضية للكائنات الداخلية إذا لم تكن موجودة
-function initializeXpObject(obj) {
-    if (!obj) {
-        return {
-            xp: 0, level: 0,
-            daily: 0, weekly: 0, monthly: 0,
-            dailyResetAt: 0, weeklyResetAt: 0, monthlyResetAt: 0
-        };
-    }
-    // التأكد من وجود كل الحقول المطلوبة
-    obj.xp = obj.xp || 0;
-    obj.level = obj.level || 0;
-    obj.daily = obj.daily || 0;
-    obj.weekly = obj.weekly || 0;
-    obj.monthly = obj.monthly || 0;
-    obj.dailyResetAt = obj.dailyResetAt || 0;
-    obj.weeklyResetAt = obj.weeklyResetAt || 0;
-    obj.monthlyResetAt = obj.monthlyResetAt || 0;
-    return obj;
+/**
+ * تهيئة/تطبيع كائن XP (للتوافق مع أي استدعاء قديم)
+ * يعيد شكل الحقول الصحيح حسب سكيمة UserXP الحالية.
+ */
+function initializeXpObject(obj = {}) {
+  return {
+    textXp: Number(obj.textXp || 0),
+    voiceXp: Number(obj.voiceXp || 0),
+    totalXp: Number(obj.totalXp || 0),
+    level: Number(obj.level || 0),
+
+    dailyTextXp: Number(obj.dailyTextXp || 0),
+    weeklyTextXp: Number(obj.weeklyTextXp || 0),
+    monthlyTextXp: Number(obj.monthlyTextXp || 0),
+
+    dailyVoiceXp: Number(obj.dailyVoiceXp || 0),
+    weeklyVoiceXp: Number(obj.weeklyVoiceXp || 0),
+    monthlyVoiceXp: Number(obj.monthlyVoiceXp || 0),
+
+    dailyResetAt: Number(obj.dailyResetAt || 0),
+    weeklyResetAt: Number(obj.weeklyResetAt || 0),
+    monthlyResetAt: Number(obj.monthlyResetAt || 0)
+  };
 }
 
+/**
+ * إعادة تعيين دوري آمن على مستوى السيرفر.
+ * يقبل guildId (String).
+ */
 async function resetIfNeeded(guildId) {
+  if (!guildId || typeof guildId !== 'string') return;
+
   const now = Date.now();
-  const currentStartOfDay = startOfDay(now);
-  const currentStartOfWeek = startOfWeek(now);
-  const currentStartOfMonth = startOfMonth(now);
+  const dayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
 
-  // إعادة تعيين الخبرة الكتابية
+  // Daily reset
   await UserXP.updateMany(
-    { guildId: guildId, 'text.dailyResetAt': { $lt: currentStartOfDay } },
+    {
+      guildId,
+      $or: [
+        { dailyResetAt: { $lt: dayStart } },
+        { dailyResetAt: { $exists: false } }
+      ]
+    },
     {
       $set: {
-        'text.daily': 0, 'text.dailyResetAt': currentStartOfDay,
-        'text.weekly': 0, 'text.weeklyResetAt': currentStartOfWeek,
-        'text.monthly': 0, 'text.monthlyResetAt': currentStartOfMonth
+        dailyTextXp: 0,
+        dailyVoiceXp: 0,
+        dailyResetAt: dayStart
       }
     }
   );
 
-  // إعادة تعيين الخبرة الصوتية
+  // Weekly reset
   await UserXP.updateMany(
-    { guildId: guildId, 'voice.dailyResetAt': { $lt: currentStartOfDay } },
+    {
+      guildId,
+      $or: [
+        { weeklyResetAt: { $lt: weekStart } },
+        { weeklyResetAt: { $exists: false } }
+      ]
+    },
     {
       $set: {
-        'voice.daily': 0, 'voice.dailyResetAt': currentStartOfDay,
-        'voice.weekly': 0, 'voice.weeklyResetAt': currentStartOfWeek,
-        'voice.monthly': 0, 'voice.monthlyResetAt': currentStartOfMonth
+        weeklyTextXp: 0,
+        weeklyVoiceXp: 0,
+        weeklyResetAt: weekStart
+      }
+    }
+  );
+
+  // Monthly reset
+  await UserXP.updateMany(
+    {
+      guildId,
+      $or: [
+        { monthlyResetAt: { $lt: monthStart } },
+        { monthlyResetAt: { $exists: false } }
+      ]
+    },
+    {
+      $set: {
+        monthlyTextXp: 0,
+        monthlyVoiceXp: 0,
+        monthlyResetAt: monthStart
       }
     }
   );
 }
 
-// وظيفة داخلية لتحديث XP scopes للمستخدم الفردي
+/**
+ * إعادة تعيين scopes لوثيقة UserXP واحدة داخل الذاكرة.
+ * مفيد قبل الحفظ.
+ */
 function resetXpScopes(doc, now = Date.now()) {
-  const currentStartOfDay = startOfDay(now);
-  const currentStartOfWeek = startOfWeek(now);
-  const currentStartOfMonth = startOfMonth(now);
+  if (!doc) return false;
 
-  // إعادة تعيين الكتابية
-  if (!doc.text.dailyResetAt || doc.text.dailyResetAt < currentStartOfDay) {
-    doc.text.daily = 0;
-    doc.text.dailyResetAt = currentStartOfDay;
-  }
-  if (!doc.text.weeklyResetAt || doc.text.weeklyResetAt < currentStartOfWeek) {
-    doc.text.weekly = 0;
-    doc.text.weeklyResetAt = currentStartOfWeek;
-  }
-  if (!doc.text.monthlyResetAt || doc.text.monthlyResetAt < currentStartOfMonth) {
-    doc.text.monthly = 0;
-    doc.text.monthlyResetAt = currentStartOfMonth;
+  const dayStart = startOfDay(now);
+  const weekStart = startOfWeek(now);
+  const monthStart = startOfMonth(now);
+
+  let changed = false;
+
+  // تطبيع أولي للحقول
+  if (typeof doc.textXp !== 'number') { doc.textXp = Number(doc.textXp || 0); changed = true; }
+  if (typeof doc.voiceXp !== 'number') { doc.voiceXp = Number(doc.voiceXp || 0); changed = true; }
+  if (typeof doc.totalXp !== 'number') { doc.totalXp = Number(doc.totalXp || 0); changed = true; }
+  if (typeof doc.level !== 'number') { doc.level = Number(doc.level || 0); changed = true; }
+
+  for (const key of [
+    'dailyTextXp', 'weeklyTextXp', 'monthlyTextXp',
+    'dailyVoiceXp', 'weeklyVoiceXp', 'monthlyVoiceXp'
+  ]) {
+    if (typeof doc[key] !== 'number') {
+      doc[key] = Number(doc[key] || 0);
+      changed = true;
+    }
   }
 
-  // إعادة تعيين الصوتية
-  if (!doc.voice.dailyResetAt || doc.voice.dailyResetAt < currentStartOfDay) {
-    doc.voice.daily = 0;
-    doc.voice.dailyResetAt = currentStartOfDay;
+  if (!doc.dailyResetAt || doc.dailyResetAt < dayStart) {
+    doc.dailyTextXp = 0;
+    doc.dailyVoiceXp = 0;
+    doc.dailyResetAt = dayStart;
+    changed = true;
   }
-  if (!doc.voice.weeklyResetAt || doc.voice.weeklyResetAt < currentStartOfWeek) {
-    doc.voice.weekly = 0;
-    doc.voice.weeklyResetAt = currentStartOfWeek;
+
+  if (!doc.weeklyResetAt || doc.weeklyResetAt < weekStart) {
+    doc.weeklyTextXp = 0;
+    doc.weeklyVoiceXp = 0;
+    doc.weeklyResetAt = weekStart;
+    changed = true;
   }
-  if (!doc.voice.monthlyResetAt || doc.voice.monthlyResetAt < currentStartOfMonth) {
-    doc.voice.monthly = 0;
-    doc.voice.monthlyResetAt = currentStartOfMonth;
+
+  if (!doc.monthlyResetAt || doc.monthlyResetAt < monthStart) {
+    doc.monthlyTextXp = 0;
+    doc.monthlyVoiceXp = 0;
+    doc.monthlyResetAt = monthStart;
+    changed = true;
   }
+
+  // إعادة حساب الإجمالي احتياطًا
+  const recomputedTotal = (doc.textXp || 0) + (doc.voiceXp || 0);
+  if (doc.totalXp !== recomputedTotal) {
+    doc.totalXp = recomputedTotal;
+    changed = true;
+  }
+
+  return changed;
 }
 
-
-module.exports = { resetIfNeeded, initializeXpObject, resetXpScopes };
+module.exports = {
+  resetIfNeeded,
+  initializeXpObject,
+  resetXpScopes,
+  startOfDay,
+  startOfWeek,
+  startOfMonth
+};
