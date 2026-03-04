@@ -184,30 +184,31 @@ const extractIdFromMention = arg => {
   return null;
 };
 
-const fetchMember = async (guild, arg) => {
-  if (!arg) return null;
+// ✅ نسخة محسنة: تدعم mention من نفس الرسالة + ID + cache + API search
+const fetchMember = async (guild, arg, message = null) => {
+  if (!guild || !arg) return null;
   const raw = String(arg).trim();
   if (!raw) return null;
 
+  // 0) لو فيه mention في الرسالة خده مباشرة
+  if (message?.mentions?.members?.size) {
+    const mentioned = message.mentions.members.first();
+    if (mentioned) return mentioned;
+  }
+
+  // 1) ID أو mention
   const id = extractIdFromMention(raw);
   if (id) {
     try {
-      return await guild.members.fetch({ user: id, force: true });
-    } catch {
-      try {
-        return await guild.members.fetch(id);
-      } catch {
-        return null;
-      }
+      return await guild.members.fetch(id);
+    } catch (e) {
+      console.log('fetchMember: fetch by id failed:', e?.code, e?.message);
     }
   }
 
   const normalized = raw.toLowerCase();
 
-  try {
-    await guild.members.fetch();
-  } catch {}
-
+  // 2) من الكاش
   let found =
     guild.members.cache.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
     guild.members.cache.find(m => (m.user.username || '').toLowerCase() === normalized) ||
@@ -215,15 +216,19 @@ const fetchMember = async (guild, arg) => {
 
   if (found) return found;
 
+  // 3) API search
   try {
-    const queried = await guild.members.fetch({ query: raw, limit: 50 });
+    const queried = await guild.members.search({ query: raw, limit: 10 });
     found =
       queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
       queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
-      queried.find(m => (m.displayName || '').toLowerCase() === normalized);
+      queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
+      queried.first();
 
     if (found) return found;
-  } catch {}
+  } catch (e) {
+    console.log('fetchMember: member search failed:', e?.code, e?.message);
+  }
 
   return null;
 };
@@ -647,7 +652,7 @@ module.exports = {
 
         // FIX: أخذ كامل الوسيط بدل كلمة وحدة
         const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -729,7 +734,7 @@ module.exports = {
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg);
+        const targetMember = await fetchMember(message.guild, targetArg, message);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -870,7 +875,7 @@ module.exports = {
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg);
+        const targetMember = await fetchMember(message.guild, targetArg, message);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -927,10 +932,10 @@ module.exports = {
         let amount = null;
 
         if (tokens[1] && extractIdFromMention(tokens[1])) {
-          targetMember = await fetchMember(message.guild, tokens[1]);
+          targetMember = await fetchMember(message.guild, tokens[1], message);
           amount = Number(tokens[2]);
         } else if (tokens[2] && extractIdFromMention(tokens[2])) {
-          targetMember = await fetchMember(message.guild, tokens[2]);
+          targetMember = await fetchMember(message.guild, tokens[2], message);
           amount = Number(tokens[1]);
         } else {
           amount = Number(tokens[1]);
@@ -985,7 +990,7 @@ module.exports = {
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg);
+        const targetMember = await fetchMember(message.guild, targetArg, message);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -1025,7 +1030,7 @@ module.exports = {
         if (!markProcessed(guardKey)) return;
 
         const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -1105,7 +1110,7 @@ module.exports = {
         if (!markProcessed(guardKey)) return;
 
         const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
+        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
