@@ -12,7 +12,8 @@ const {
   WARN_ALLOWED_ROLE_ID,
   WARN_COMMAND_CHANNEL_IDS,
   PANEL_LINE_IMAGE_URL,
-  PROMOTION_ANNOUNCE_CHANNEL_ID
+  PROMOTION_ANNOUNCE_CHANNEL_ID,
+  LEVEL_CONFIGS
 } = require('../config/adminProgressConfig');
 const {
   getOrCreate,
@@ -27,12 +28,6 @@ const {
   demoteOneLevel,
   syncDocLevelWithMemberRoles
 } = require('../utils/adminProgressService');
-
-// استيراد خدمة البطاقة الإدارية
-const {
-  hasAdminRole,
-  findAdminProfileByText
-} = require('../utils/adminProfileService');
 
 const TICKET_PREFIX = 'ticket-';
 const COOLDOWN = 60_000;
@@ -52,7 +47,7 @@ const BREAK_ALIASES = ['كسر', 'break', 'demote', 'down'];
 
 const STATS_ALIASES = Array.isArray(ALIASES?.STATS) && ALIASES.STATS.length
   ? ALIASES.STATS
-  : ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'];
+  : ['ستات', 'stats', 'stat', 'استات', 'إحصائيات', 'احصائيات', 'بطاقة'];
 
 // أمر التعديل
 const EDIT_ALIASES = ['تعديل', 'edit', 'mod', 'set', 'اضبط', 'عدل'];
@@ -67,9 +62,6 @@ const TOP_PANEL_IMAGE_URL = PANEL_LINE_IMAGE_URL;
 const TOP_REPLY_TTL = 10_000;
 const MANAGED_REPLY_COOLDOWN = 2000;
 const MESSAGE_GUARD_TTL = 15_000;
-
-const MEMBER_FETCH_TIMEOUT = 5000;
-const RESET_GUILD_COOLDOWN = 5 * 60_000; // 5 دقائق
 
 const POINT_TYPE_LABELS = {
   tickets: 'نقاط التذاكر',
@@ -88,7 +80,6 @@ const textXpCooldowns = new Map();
 const recentWarnActions = new Map();
 const replyLocks = new Map();
 const messageGuards = new Map();
-const guildResetLocks = new Map();
 
 const sendNoPing = (channel, payload) =>
   channel.send({ allowedMentions: { parse: [] }, ...payload });
@@ -98,21 +89,6 @@ function lockMessage(messageId, ttl = MESSAGE_GUARD_TTL) {
   const timeout = setTimeout(() => messageGuards.delete(messageId), ttl);
   messageGuards.set(messageId, timeout);
   return true;
-}
-
-function shouldRunGuildReset(guildId, ttl = RESET_GUILD_COOLDOWN) {
-  const now = Date.now();
-  const last = guildResetLocks.get(guildId) || 0;
-  if (now - last < ttl) return false;
-  guildResetLocks.set(guildId, now);
-  return true;
-}
-
-function withTimeout(promise, ms = MEMBER_FETCH_TIMEOUT) {
-  return Promise.race([
-    promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error('Member fetch timeout')), ms))
-  ]);
 }
 
 function isDuplicateCommand(message, ms = 2000) {
@@ -187,40 +163,35 @@ const warnDetailEmbed = ({ target, moderator, reason, caseId }) => {
 
 const extractIdFromMention = arg => {
   if (!arg) return null;
-  const raw = String(arg).trim();
-
-  const mentionMatch = raw.match(/^<@!?(\d+)>$/);
-  if (mentionMatch) return mentionMatch[1];
-
-  if (/^\d{15,21}$/.test(raw)) return raw;
-
-  const cleanedDigits = raw.replace(/[^\d]/g, '');
-  if (/^\d{15,21}$/.test(cleanedDigits)) return cleanedDigits;
-
+  const match = String(arg).match(/^<@!?(\d+)>$/);
+  if (match) return match[1];
+  if (/^\d{15,21}$/.test(String(arg))) return String(arg);
   return null;
 };
 
-async function fetchMemberInternal(guild, arg, message = null) {
-  if (!guild || !arg) return null;
+const fetchMember = async (guild, arg) => {
+  if (!arg) return null;
   const raw = String(arg).trim();
   if (!raw) return null;
-
-  if (message?.mentions?.members?.size) {
-    const mentioned = message.mentions.members.first();
-    if (mentioned) return mentioned;
-  }
 
   const id = extractIdFromMention(raw);
   if (id) {
     try {
-      const byId = await guild.members.fetch(id);
-      if (byId) return byId;
-    } catch (e) {
-      console.log('fetchMemberInternal: fetch by id failed:', e?.code, e?.message);
+      return await guild.members.fetch({ user: id, force: true });
+    } catch {
+      try {
+        return await guild.members.fetch(id);
+      } catch {
+        return null;
+      }
     }
   }
 
   const normalized = raw.toLowerCase();
+
+  try {
+    await guild.members.fetch();
+  } catch {}
 
   let found =
     guild.members.cache.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
@@ -230,38 +201,16 @@ async function fetchMemberInternal(guild, arg, message = null) {
   if (found) return found;
 
   try {
-    const queried = await guild.members.search({ query: raw, limit: 10 });
+    const queried = await guild.members.fetch({ query: raw, limit: 50 });
     found =
       queried.find(m => (m.user.tag || '').toLowerCase() === normalized) ||
       queried.find(m => (m.user.username || '').toLowerCase() === normalized) ||
       queried.find(m => (m.displayName || '').toLowerCase() === normalized) ||
       queried.first();
-
     if (found) return found;
-  } catch (e) {
-    console.log('fetchMemberInternal: member search failed:', e?.code, e?.message);
-  }
-
-  try {
-    const profile = await findAdminProfileByText(guild.id, raw);
-    if (profile?.userId) {
-      const byProfile = await guild.members.fetch(profile.userId).catch(() => null);
-      if (byProfile) return byProfile;
-    }
-  } catch (e) {
-    console.log('fetchMemberInternal: admin profile fallback failed:', e?.message);
-  }
+  } catch {}
 
   return null;
-}
-
-const fetchMember = async (guild, arg, message = null, timeoutMs = MEMBER_FETCH_TIMEOUT) => {
-  try {
-    return await withTimeout(fetchMemberInternal(guild, arg, message), timeoutMs);
-  } catch (e) {
-    console.log('fetchMember timeout/fail:', e?.message);
-    return null;
-  }
 };
 
 function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
@@ -275,7 +224,15 @@ function isDuplicateWarnAction(guildId, modId, targetId, reason, ms = 5000) {
 }
 
 function isAdminMember(member) {
-  return hasAdminRole(member);
+  if (!member?.roles?.cache) return false;
+  const adminRoles = new Set([String(SUPPORT_ROLE_ID)]);
+  for (const cfg of LEVEL_CONFIGS) {
+    for (const r of cfg.roles || []) adminRoles.add(String(r));
+  }
+  for (const roleId of adminRoles) {
+    if (member.roles.cache.has(roleId)) return true;
+  }
+  return false;
 }
 
 function isWarnChannel(channelId) {
@@ -309,7 +266,9 @@ async function addWarningAndNotify(message, member, reason) {
   const detailEmbed = warnDetailEmbed({ target: member, moderator: message.member, reason, caseId });
 
   if (DM_USER_ON_WARN) {
-    try { await member.send({ embeds: [detailEmbed] }); } catch {}
+    try {
+      await member.send({ embeds: [detailEmbed] });
+    } catch {}
   }
 
   await sendNoPing(message.channel, { embeds: [redConfirmPanel(`تم تحذير ${member.user.username}`)] });
@@ -317,7 +276,9 @@ async function addWarningAndNotify(message, member, reason) {
   if (WARN_LOG_CHANNEL_ID) {
     const logChannel = message.guild.channels.cache.get(WARN_LOG_CHANNEL_ID);
     if (logChannel && logChannel.id !== message.channel.id) {
-      try { await sendNoPing(logChannel, { embeds: [detailEmbed] }); } catch {}
+      try {
+        await sendNoPing(logChannel, { embeds: [detailEmbed] });
+      } catch {}
     }
   }
 }
@@ -350,9 +311,24 @@ async function showWarnings(message, member) {
 }
 
 const calculateLevel = xp => Math.floor(0.1 * Math.sqrt(xp));
-const startOfDay = value => { const d = new Date(value); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
-const startOfWeek = value => { const d = new Date(value); const day = d.getUTCDay(); d.setUTCDate(d.getUTCDate() - day); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
-const startOfMonth = value => { const d = new Date(value); d.setUTCDate(1); d.setUTCHours(0, 0, 0, 0); return d.getTime(); };
+const startOfDay = value => {
+  const d = new Date(value);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const startOfWeek = value => {
+  const d = new Date(value);
+  const day = d.getUTCDay();
+  d.setUTCDate(d.getUTCDate() - day);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const startOfMonth = value => {
+  const d = new Date(value);
+  d.setUTCDate(1);
+  d.setUTCHours(0, 0, 0, 0);
+  return d.getTime();
+};
 
 function resetScopes(doc, now) {
   let changed = false;
@@ -361,13 +337,22 @@ function resetScopes(doc, now) {
   const monthly = startOfMonth(now);
 
   if (!doc.dailyResetAt || doc.dailyResetAt < daily) {
-    doc.dailyTextXp = 0; doc.dailyVoiceXp = 0; doc.dailyResetAt = daily; changed = true;
+    doc.dailyTextXp = 0;
+    doc.dailyVoiceXp = 0;
+    doc.dailyResetAt = daily;
+    changed = true;
   }
   if (!doc.weeklyResetAt || doc.weeklyResetAt < weekly) {
-    doc.weeklyTextXp = 0; doc.weeklyVoiceXp = 0; doc.weeklyResetAt = weekly; changed = true;
+    doc.weeklyTextXp = 0;
+    doc.weeklyVoiceXp = 0;
+    doc.weeklyResetAt = weekly;
+    changed = true;
   }
   if (!doc.monthlyResetAt || doc.monthlyResetAt < monthly) {
-    doc.monthlyTextXp = 0; doc.monthlyVoiceXp = 0; doc.monthlyResetAt = monthly; changed = true;
+    doc.monthlyTextXp = 0;
+    doc.monthlyVoiceXp = 0;
+    doc.monthlyResetAt = monthly;
+    changed = true;
   }
 
   return changed;
@@ -435,10 +420,12 @@ async function grantTextXp(message) {
 function getTopScopeFromArg(arg) {
   const v = (arg || '').trim().toLowerCase();
   if (!v) return 'all';
+
   if (['day', 'daily', 'يومي', 'اليومي'].includes(v)) return 'day';
   if (['week', 'weekly', 'اسبوع', 'أسبوع', 'اسبوعي', 'أسبوعي'].includes(v)) return 'week';
   if (['month', 'monthly', 'شهري', 'الشهري'].includes(v)) return 'month';
   if (['all', 'global', 'server', 'عام', 'العام', 'سيرفر', 'كل'].includes(v)) return 'all';
+
   return null;
 }
 
@@ -456,11 +443,13 @@ function getScopedValues(doc, scope, now) {
     const voiceXp = dayValid ? doc.dailyVoiceXp || 0 : 0;
     return { textXp, voiceXp, totalXp: textXp + voiceXp };
   }
+
   if (scope === 'week') {
     const textXp = weekValid ? doc.weeklyTextXp || 0 : 0;
     const voiceXp = weekValid ? doc.weeklyVoiceXp || 0 : 0;
     return { textXp, voiceXp, totalXp: textXp + voiceXp };
   }
+
   if (scope === 'month') {
     const textXp = monthValid ? doc.monthlyTextXp || 0 : 0;
     const voiceXp = monthValid ? doc.monthlyVoiceXp || 0 : 0;
@@ -498,12 +487,10 @@ module.exports = {
       if (!message.guild || message.author.bot) return;
       if (!lockMessage(message.id)) return;
 
-      if (typeof resetIfNeeded === 'function' && shouldRunGuildReset(message.guild.id)) {
+      if (typeof resetIfNeeded === 'function') {
         try {
           await resetIfNeeded(message.guild.id);
-        } catch (e) {
-          console.error('resetIfNeeded error:', e);
-        }
+        } catch {}
       }
 
       if (message.content.trim().length > 0 || message.attachments.size > 0) {
@@ -513,60 +500,46 @@ module.exports = {
       const content = message.content.trim();
       if (!content.length) return;
 
-      let tokens = content.split(/\s+/).filter(Boolean);
-      if (!tokens.length) return;
+      const tokens = content.split(/\s+/);
+      let command = (tokens.shift() || '').trim();
+      command = command.replace(/^[!?.]+/, '').toLowerCase(); // يدعم !stats أو stats
 
-      const cleanCmd = s => String(s || '').replace(/^[!?.]+/, '').trim().toLowerCase();
-      const has = (arr, v) => Array.isArray(arr) && arr.includes(v);
+      const isWarnCommand = WARN_ALIASES.includes(command);
+      const isWarningsCommand = WARNINGS_ALIASES.includes(command);
+      const isClaimCommand = CLAIM_ALIASES.includes(command);
+      const isUnclaimCommand = UNCLAIM_ALIASES.includes(command);
+      const isXpCommand = XP_ALIASES.includes(command);
+      const isTopCommand = TOP_ALIASES.includes(command);
+      const isTasksCommand = ALIASES.TASKS.includes(command);
+      const isStatsCommand = STATS_ALIASES.includes(command);
+      const isConvertCommand = ALIASES.CONVERT.includes(command);
+      const isTransferCommand = ALIASES.TRANSFER.includes(command);
+      const isEditCommand = EDIT_ALIASES.includes(command);
+      const isBreakCommand = BREAK_ALIASES.includes(command);
 
-      const ALL_ALIASES = [
-        ...WARN_ALIASES,
-        ...WARNINGS_ALIASES,
-        ...CLAIM_ALIASES,
-        ...UNCLAIM_ALIASES,
-        ...XP_ALIASES,
-        ...TOP_ALIASES,
-        ...(Array.isArray(ALIASES?.TASKS) ? ALIASES.TASKS : []),
-        ...STATS_ALIASES,
-        ...(Array.isArray(ALIASES?.CONVERT) ? ALIASES.CONVERT : []),
-        ...(Array.isArray(ALIASES?.TRANSFER) ? ALIASES.TRANSFER : []),
-        ...EDIT_ALIASES,
-        ...BREAK_ALIASES
-      ];
-
-      let command = cleanCmd(tokens[0]);
-      let args = tokens.slice(1);
-
-      if (!ALL_ALIASES.includes(command) && tokens.length > 1) {
-        const lastAsCommand = cleanCmd(tokens[tokens.length - 1]);
-        if (ALL_ALIASES.includes(lastAsCommand)) {
-          command = lastAsCommand;
-          args = tokens.slice(0, -1);
-        }
-      }
-
-      const isWarnCommand = has(WARN_ALIASES, command);
-      const isWarningsCommand = has(WARNINGS_ALIASES, command);
-      const isClaimCommand = has(CLAIM_ALIASES, command);
-      const isUnclaimCommand = has(UNCLAIM_ALIASES, command);
-      const isXpCommand = has(XP_ALIASES, command);
-      const isTopCommand = has(TOP_ALIASES, command);
-      const isTasksCommand = has(ALIASES?.TASKS, command);
-      const isStatsCommand = has(STATS_ALIASES, command);
-      const isConvertCommand = has(ALIASES?.CONVERT, command);
-      const isTransferCommand = has(ALIASES?.TRANSFER, command);
-      const isEditCommand = has(EDIT_ALIASES, command);
-      const isBreakCommand = has(BREAK_ALIASES, command);
-
-      if (!(isWarnCommand || isWarningsCommand || isClaimCommand || isUnclaimCommand || isXpCommand || isTopCommand || isTasksCommand || isStatsCommand || isConvertCommand || isTransferCommand || isEditCommand || isBreakCommand)) {
+      if (
+        !(
+          isWarnCommand ||
+          isWarningsCommand ||
+          isClaimCommand ||
+          isUnclaimCommand ||
+          isXpCommand ||
+          isTopCommand ||
+          isTasksCommand ||
+          isStatsCommand ||
+          isConvertCommand ||
+          isTransferCommand ||
+          isEditCommand ||
+          isBreakCommand
+        )
+      ) {
         return;
       }
 
-      tokens = args;
       if (isDuplicateCommand(message)) return;
 
       const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
-      const hasSupportRoleFlag = message.member.roles.cache.has(SUPPORT_ROLE_ID);
+      const hasSupportRole = message.member.roles.cache.has(SUPPORT_ROLE_ID);
       const canEditBreak = message.member.roles.cache.has(EDIT_BREAK_ALLOWED_ROLE_ID);
       const canWarnRole = message.member.roles.cache.has(WARN_ALLOWED_ROLE_ID);
       const inWarnChannel = isWarnChannel(message.channel.id);
@@ -574,6 +547,7 @@ module.exports = {
       if (isTasksCommand) {
         const guardKey = `${message.id}:tasks`;
         if (!markProcessed(guardKey)) return;
+
         if (!isAdminMember(message.member)) return;
 
         const myDoc = await getOrCreate(message.guild.id, message.member.id);
@@ -592,9 +566,16 @@ module.exports = {
           .addFields(
             { name: '🔢 مستواك الحالي', value: `**Level ${doc.level}**`, inline: true },
             { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-            { name: '📦 نقاطك الحالية', value: `🎟️ ${doc.points.tickets}\n⚠️ ${doc.points.warns}\n✨ ${doc.points.xp}`, inline: false }
+            {
+              name: '📦 نقاطك الحالية',
+              value: `🎟️ ${doc.points.tickets}\n⚠️ ${doc.points.warns}\n✨ ${doc.points.xp}`,
+              inline: false
+            }
           )
-          .setFooter({ text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+          .setFooter({
+            text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+            iconURL: message.author.displayAvatarURL({ size: 128 })
+          });
 
         if (nextReq) {
           embed.addFields({
@@ -607,7 +588,11 @@ module.exports = {
             inline: false
           });
         } else {
-          embed.addFields({ name: '🚀 الترقية التالية', value: '**أنت في أعلى مستوى متاح حالياً.**', inline: false });
+          embed.addFields({
+            name: '🚀 الترقية التالية',
+            value: '**أنت في أعلى مستوى متاح حالياً.**',
+            inline: false
+          });
         }
 
         await sendNoPing(message.channel, { embeds: [embed] });
@@ -618,83 +603,160 @@ module.exports = {
         const guardKey = `${message.id}:stats`;
         if (!markProcessed(guardKey)) return;
 
-        const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
-        if (!member) {
-          await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-          return;
-        }
+        try {
+          let targetRaw = tokens.join(' ').trim();
+          let member = message.member;
+          let targetUser = message.author;
 
-        const doc = await getOrCreate(message.guild.id, member.id);
-        const nextCfg = getNextLevelConfig(doc.level);
-        const multiplier = getMultiplier(member);
-        const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+          // دعم صيغ: "ستات ايدي 123" أو "stats id 123"
+          const lowerFirst = (tokens[0] || '').toLowerCase();
+          if (['id', 'userid', 'ايدي', 'آيدي', 'اىدي'].includes(lowerFirst) && tokens[1]) {
+            targetRaw = tokens[1];
+          }
 
-        const embed = new EmbedBuilder()
-          .setColor(0x0099ff)
-          .setAuthor({
-            name: `بطاقة الإداري - ${member.user.tag}`,
-            iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
-          })
-          .addFields(
-            {
-              name: '🔢 المستوى الحالي',
-              value: `**Level ${doc.level}**${doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''}`,
-              inline: true
-            },
-            { name: '🎚️ المضاعف الحالي', value: `**x${multiplier.toFixed(2)}**`, inline: true },
-            {
-              name: '🎟️ نقاطك الحالية',
-              value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-              inline: false
-            },
-            {
-              name: '📦 إجمالي مساهماتك',
-              value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
-              inline: false
+          if (targetRaw) {
+            const fetchedMember = await fetchMember(message.guild, targetRaw);
+
+            if (fetchedMember) {
+              member = fetchedMember;
+              targetUser = fetchedMember.user;
+            } else {
+              const idOnly = extractIdFromMention(targetRaw);
+              if (!idOnly) {
+                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو. تأكد من المنشن أو الـ ID.')] });
+                return;
+              }
+
+              try {
+                targetUser = await message.client.users.fetch(idOnly, { force: true });
+              } catch {
+                await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
+                return;
+              }
+
+              member = null;
             }
-          )
-          .setFooter({ text: `بناءً على طلب ${message.author.tag}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+          }
 
-        if (nextReq) {
-          embed.addFields({
-            name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-            value: [
-              `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-              `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-              `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-            ].join('\n'),
-            inline: false
-          });
-        } else {
-          embed.addFields({ name: '🚀 الترقية القادمة', value: '**أنت في أعلى مستوى متاح حالياً.**', inline: false });
+          const targetId = member?.id || targetUser.id;
+          const doc = await getOrCreate(message.guild.id, targetId);
+
+          // مهم: إذا متاح كـ GuildMember نسوي مزامنة المستوى من الرتب الحالية
+          if (member) {
+            await syncDocLevelWithMemberRoles(member, doc);
+          }
+
+          const points = {
+            tickets: Number(doc.points?.tickets || 0),
+            warns: Number(doc.points?.warns || 0),
+            xp: Number(doc.points?.xp || 0)
+          };
+          const lifetime = {
+            tickets: Number(doc.lifetime?.tickets || 0),
+            warns: Number(doc.lifetime?.warns || 0),
+            xp: Number(doc.lifetime?.xp || 0)
+          };
+
+          const userXpDoc = await UserXP.findOne({ guildId: message.guild.id, userId: targetId });
+          const totalUserXp = userXpDoc ? Number(userXpDoc.textXp || 0) + Number(userXpDoc.voiceXp || 0) : 0;
+
+          const levelNow = Number(doc.level || 0);
+          const nextCfg = getNextLevelConfig(levelNow);
+          const multiplier = getMultiplier(member || message.member);
+          const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
+
+          const avatar =
+            (member?.displayAvatarURL?.({ size: 256 })) ||
+            (targetUser?.displayAvatarURL?.({ size: 256 })) ||
+            message.guild.iconURL({ size: 256 });
+
+          const embed = new EmbedBuilder()
+            .setColor(0xff0000)
+            .setAuthor({
+              name: `بطاقة الإحصائيات - ${targetUser.tag}`,
+              iconURL: avatar || undefined
+            })
+            .addFields(
+              { name: '👤 العضو', value: `**<@${targetId}>**`, inline: true },
+              {
+                name: '🔢 المستوى الحالي (حسب الرتبة)',
+                value: `**Level ${levelNow}**${
+                  doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(new Date(doc.promotedAt).getTime() / 1000)}:R>` : ''
+                }`,
+                inline: true
+              },
+              { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+              {
+                name: '🎟️ النقاط الحالية',
+                value: `**تذاكر:** ${points.tickets}\n**تحذيرات:** ${points.warns}\n**خبرة:** ${points.xp}`,
+                inline: false
+              },
+              { name: '📊 إجمالي XP (نصي + صوتي)', value: `**${totalUserXp} XP**`, inline: false },
+              {
+                name: '📦 إجمالي المساهمات',
+                value: `**تذاكر:** ${lifetime.tickets}\n**تحذيرات:** ${lifetime.warns}\n**خبرة:** ${lifetime.xp}`,
+                inline: false
+              }
+            )
+            .setFooter({
+              text: `بناءً على طلب ${message.author.tag}`,
+              iconURL: message.author.displayAvatarURL({ size: 128 })
+            });
+
+          if (nextReq) {
+            embed.addFields({
+              name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${levelNow + 1}`}`,
+              value: [
+                `🎟️ ${formatProgress(points.tickets, nextReq.tickets)}`,
+                `⚠️ ${formatProgress(points.warns, nextReq.warns)}`,
+                `✨ ${formatProgress(points.xp, nextReq.xp)}`
+              ].join('\n'),
+              inline: false
+            });
+          } else {
+            embed.addFields({
+              name: '🚀 الترقية القادمة',
+              value: '**أنت في أعلى مستوى متاح حالياً.**',
+              inline: false
+            });
+          }
+
+          await sendNoPing(message.channel, { embeds: [embed] });
+        } catch (err) {
+          console.error('Stats command error:', err);
+          await sendNoPing(message.channel, { embeds: [redPanel('صار خطأ أثناء تنفيذ أمر ستات.')] });
         }
 
-        await sendNoPing(message.channel, { embeds: [embed] });
         return;
       }
 
       if (isBreakCommand) {
         const guardKey = `${message.id}:break`;
         if (!markProcessed(guardKey)) return;
+
         if (!canEditBreak) return;
 
         const targetArg = tokens.shift();
         const reason = tokens.join(' ').trim();
 
         if (!targetArg || !reason) {
-          await sendNoPing(message.channel, { embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName> <السبب>`')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `كسر <@عضو | ID | username | displayName> <السبب>`')]
+          });
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg, message);
+        const targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
         }
 
         try {
-          const result = await demoteOneLevel(message.guild, targetMember, { reason, byId: message.author.id });
+          const result = await demoteOneLevel(message.guild, targetMember, {
+            reason,
+            byId: message.author.id
+          });
 
           const breakEmbed = new EmbedBuilder()
             .setColor(0xff0000)
@@ -710,7 +772,10 @@ module.exports = {
                 `**الرتب المضافة:** ${formatRoleMentions(result.addedRoles)}`
               ].join('\n')
             )
-            .setFooter({ text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`, iconURL: message.author.displayAvatarURL({ size: 128 }) });
+            .setFooter({
+              text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA')}`,
+              iconURL: message.author.displayAvatarURL({ size: 128 })
+            });
 
           const announceChannel = message.guild.channels.cache.get(PROMOTION_ANNOUNCE_CHANNEL_ID);
           if (announceChannel) {
@@ -741,7 +806,9 @@ module.exports = {
             await targetMember.send({ embeds: [dmEmbed] });
           } catch {}
 
-          await sendNoPing(message.channel, { embeds: [redPanel(`تم كسر رتبة <@${targetMember.id}> بنجاح.`)] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel(`تم كسر رتبة <@${targetMember.id}> بنجاح.`)]
+          });
         } catch (err) {
           await sendNoPing(message.channel, { embeds: [redPanel(err?.message || 'تعذر تنفيذ أمر كسر.')] });
         }
@@ -751,19 +818,25 @@ module.exports = {
       if (isConvertCommand) {
         const guardKey = `${message.id}:convert`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRoleFlag) return;
+        if (!hasSupportRole) return;
 
         let amountRaw, fromType, toType;
         if (tokens.length >= 3) {
           if (Number.isFinite(Number(tokens[0]))) {
-            amountRaw = tokens[0]; fromType = tokens[1]; toType = tokens[2];
+            amountRaw = tokens[0];
+            fromType = tokens[1];
+            toType = tokens[2];
           } else {
-            fromType = tokens[0]; amountRaw = tokens[1]; toType = tokens[2];
+            fromType = tokens[0];
+            amountRaw = tokens[1];
+            toType = tokens[2];
           }
         }
 
         if (!amountRaw || !fromType || !toType) {
-          await sendNoPing(message.channel, { embeds: [redPanel('الاستخدام: `تبديل <الكمية> <من-نوع> <إلى-نوع>`')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تبديل <الكمية> <من-نوع> <إلى-نوع>`')]
+          });
           return;
         }
 
@@ -795,10 +868,12 @@ module.exports = {
       if (isTransferCommand) {
         const guardKey = `${message.id}:transfer`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRoleFlag) return;
+        if (!hasSupportRole) return;
 
         if (tokens.length < 3) {
-          await sendNoPing(message.channel, { embeds: [redPanel('الاستخدام: `تحويل <نوع> <@عضو> <الكمية>`')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تحويل <نوع> <@عضو> <الكمية>`')]
+          });
           return;
         }
 
@@ -812,7 +887,7 @@ module.exports = {
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg, message);
+        const targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -834,7 +909,10 @@ module.exports = {
 
         try {
           const result = await transferPoints(fromDoc, toDoc, typeArg, amount);
-          const embed = greenPanel(`**تم التحويل بنجاح من <@${message.author.id}> إلى <@${targetMember.id}> (${result.amount})**`, '📤 تحويل النقاط');
+          const embed = greenPanel(
+            `**تم التحويل بنجاح من <@${message.author.id}> إلى <@${targetMember.id}> (${result.amount})**`,
+            '📤 تحويل النقاط'
+          );
           await sendNoPing(message.channel, { embeds: [embed] });
         } catch (err) {
           await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
@@ -845,10 +923,13 @@ module.exports = {
       if (isEditCommand) {
         const guardKey = `${message.id}:edit`;
         if (!markProcessed(guardKey)) return;
+
         if (!canEditBreak) return;
 
         if (tokens.length < 2) {
-          await sendNoPing(message.channel, { embeds: [redPanel('الاستخدام: `تعديل <نوع> <قيمة> [@عضو]` أو `تعديل <نوع> <@عضو> <قيمة>`')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('الاستخدام: `تعديل <نوع> <قيمة> [@عضو]` أو `تعديل <نوع> <@عضو> <قيمة>`')]
+          });
           return;
         }
 
@@ -863,10 +944,10 @@ module.exports = {
         let amount = null;
 
         if (tokens[1] && extractIdFromMention(tokens[1])) {
-          targetMember = await fetchMember(message.guild, tokens[1], message);
+          targetMember = await fetchMember(message.guild, tokens[1]);
           amount = Number(tokens[2]);
         } else if (tokens[2] && extractIdFromMention(tokens[2])) {
-          targetMember = await fetchMember(message.guild, tokens[2], message);
+          targetMember = await fetchMember(message.guild, tokens[2]);
           amount = Number(tokens[1]);
         } else {
           amount = Number(tokens[1]);
@@ -889,7 +970,11 @@ module.exports = {
 
         await tryPromote(message, targetMember, { announceInChannel: true, dmOnPromote: true });
 
-        const embed = greenPanel(`**تم تعديل ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetMember.id}> إلى ${amount}**`, '✏️ تعديل الإحصائيات');
+        const embed = greenPanel(
+          `**تم تعديل ${POINT_TYPE_LABELS[pointType] || pointType} لـ <@${targetMember.id}> إلى ${amount}**`,
+          '✏️ تعديل الإحصائيات'
+        );
+
         await sendNoPing(message.channel, { embeds: [embed] });
         return;
       }
@@ -917,7 +1002,7 @@ module.exports = {
           return;
         }
 
-        const targetMember = await fetchMember(message.guild, targetArg, message);
+        const targetMember = await fetchMember(message.guild, targetArg);
         if (!targetMember) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -932,7 +1017,10 @@ module.exports = {
           return;
         }
 
-        if (message.guild.ownerId !== message.author.id && message.member.roles.highest.position <= targetMember.roles.highest.position) {
+        if (
+          message.guild.ownerId !== message.author.id &&
+          message.member.roles.highest.position <= targetMember.roles.highest.position
+        ) {
           await sendNoPing(message.channel, { embeds: [redPanel('❌ لا يمكنك تحذير عضو أعلى/مساوي لرتبتك.')] });
           return;
         }
@@ -954,7 +1042,7 @@ module.exports = {
         if (!markProcessed(guardKey)) return;
 
         const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
+        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -969,10 +1057,12 @@ module.exports = {
         if (!markProcessed(guardKey, COOLDOWN)) return;
 
         if (!isTicketChannel) {
-          await sendManagedEmbedOnce(message.channel, 'claim-outside', { embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')] });
+          await sendManagedEmbedOnce(message.channel, 'claim-outside', {
+            embeds: [redPanel('هذا الأمر يعمل فقط داخل قنوات التذاكر.')]
+          });
           return;
         }
-        if (!hasSupportRoleFlag) return;
+        if (!hasSupportRole) return;
 
         let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (ticketClaim) return;
@@ -1013,7 +1103,7 @@ module.exports = {
         if (!markProcessed(guardKey, COOLDOWN)) return;
 
         if (!isTicketChannel) return;
-        if (!hasSupportRoleFlag) return;
+        if (!hasSupportRole) return;
 
         const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (!ticketClaim) return;
@@ -1031,7 +1121,7 @@ module.exports = {
         if (!markProcessed(guardKey)) return;
 
         const targetArg = tokens.join(' ').trim();
-        const member = targetArg ? await fetchMember(message.guild, targetArg, message) : message.member;
+        const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
         if (!member) {
           await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
           return;
@@ -1087,7 +1177,9 @@ module.exports = {
         const scope = getTopScopeFromArg(scopeArg);
 
         if (!scope) {
-          await sendNoPing(message.channel, { embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all`.')] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all`.')]
+          });
           return;
         }
 
@@ -1115,7 +1207,9 @@ module.exports = {
         const topRows = nonZeroRows.slice(0, TOP_LIMIT);
 
         if (!nonZeroRows.length) {
-          await sendNoPing(message.channel, { embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)] });
+          await sendNoPing(message.channel, {
+            embeds: [redPanel(`لا توجد بيانات XP ${scopeLabel(scope)}ة حالياً.`)]
+          });
           return;
         }
 
