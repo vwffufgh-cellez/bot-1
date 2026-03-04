@@ -1,4 +1,3 @@
-// events/messageCreate.js
 const { Events, EmbedBuilder, PermissionsBitField } = require('discord.js');
 const UserXP = require('../models/UserXP');
 const TicketClaim = require('../models/TicketClaim');
@@ -24,35 +23,24 @@ const COOLDOWN = 60_000;
 const WARN_LOG_CHANNEL_ID = '1463931942058852399';
 const DM_USER_ON_WARN = true;
 const MOD_REQUIRED_PERM = PermissionsBitField.Flags.ModerateMembers;
-
 const WARN_ALIASES = ['warn', 'تحذير', 'تحدير', 'ت'];
 const WARNINGS_ALIASES = ['warnings', 'warns', 'تحذيرات', 'تحديرات'];
+
 const CLAIM_ALIASES = ['claim', 'استلام', 'انا'];
 const UNCLAIM_ALIASES = ['unclaim', 'إلغاء', 'خروج'];
-const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
-const TOP_ALIASES = ['t', 'top', 'توب'];
 
+const XP_ALIASES = ['xp', 'نقاط', 'خبرة'];
 const TEXT_XP_MIN = 15;
 const TEXT_XP_MAX = 25;
 const TEXT_XP_COOLDOWN = 60_000;
+
+const TOP_ALIASES = ['t', 'top', 'توب'];
 const TOP_LIMIT = 10;
-const TOP_PANEL_IMAGE_URL =
-  'https://cdn.discordapp.com/attachments/1390932617645260872/1391661420558422156/Picsart_25-07-07_09-05-01-827.png?ex=69a3d732&is=69a285b2&hm=fc18c7619be199eef08ad19d733f6f7012952a24aa55a8edff97333d7420d76c';
+const TOP_PANEL_IMAGE_URL = 'PUT_YOUR_SERVER_LINE_IMAGE_URL_HERE';
 
 const TOP_REPLY_TTL = 10_000;
 const MANAGED_REPLY_COOLDOWN = 2000;
 const MESSAGE_GUARD_TTL = 15_000;
-
-const POINT_TYPE_LABELS = {
-  tickets: 'نقاط التذاكر',
-  warns: 'نقاط التحذيرات',
-  xp: 'نقاط الخبرة'
-};
-const POINT_TYPE_EMOJIS = {
-  tickets: '🎟️',
-  warns: '⚠️',
-  xp: '✨'
-};
 
 const recentCommands = new Map();
 const processedCommands = new Map();
@@ -328,10 +316,15 @@ async function grantTextXp(message) {
 
   resetScopes(userXp, now);
 
-  userXp.textXp = (userXp.textXp || 0) + xpAmount;
-  userXp.dailyTextXp = (userXp.dailyTextXp || 0) + xpAmount;
-  userXp.weeklyTextXp = (userXp.weeklyTextXp || 0) + xpAmount;
-  userXp.monthlyTextXp = (userXp.monthlyTextXp || 0) + xpAmount;
+  const baseText = userXp.textXp || 0;
+  const baseDailyText = userXp.dailyTextXp || 0;
+  const baseWeeklyText = userXp.weeklyTextXp || 0;
+  const baseMonthlyText = userXp.monthlyTextXp || 0;
+
+  userXp.textXp = baseText + xpAmount;
+  userXp.dailyTextXp = baseDailyText + xpAmount;
+  userXp.weeklyTextXp = baseWeeklyText + xpAmount;
+  userXp.monthlyTextXp = baseMonthlyText + xpAmount;
 
   userXp.voiceXp = userXp.voiceXp || 0;
   userXp.dailyVoiceXp = userXp.dailyVoiceXp || 0;
@@ -401,12 +394,6 @@ function formatTopField(rows, key) {
   return rows.map(r => `**#${r.rank}** | <@${r.userId}> | **XP: ${r[key]}**`).join('\n') || '**لا توجد بيانات.**';
 }
 
-function formatProgress(current, required) {
-  if (!required || required <= 0) return '—';
-  const pct = Math.min(100, Math.round((current / required) * 100));
-  return `${current}/${required} (${pct}%)`;
-}
-
 module.exports = {
   name: Events.MessageCreate,
   async execute(message) {
@@ -472,70 +459,7 @@ module.exports = {
       const guardKey = `${message.id}:stats`;
       if (!markProcessed(guardKey)) return;
 
-      const targetArg = tokens.shift();
-      const member = targetArg ? await fetchMember(message.guild, targetArg) : message.member;
-      if (!member) {
-        await sendNoPing(message.channel, { embeds: [redPanel('لم أستطع العثور على العضو.')] });
-        return;
-      }
-
-      const doc = await getOrCreate(message.guild.id, member.id);
-      const nextCfg = getNextLevelConfig(doc.level);
-      const multiplier = getMultiplier(member);
-      const nextReq = nextCfg ? scaledReq(nextCfg.req, multiplier) : null;
-
-      const embed = new EmbedBuilder()
-        .setColor(0x0099ff)
-        .setAuthor({
-          name: `بطاقة الإداري - ${member.user.tag}`,
-          iconURL: member.displayAvatarURL({ size: 256 }) || message.guild.iconURL({ dynamic: true })
-        })
-        .addFields(
-          {
-            name: '🔢 المستوى الحالي',
-            value: `**Level ${doc.level}**${doc.promotedAt ? `\nآخر ترقية: <t:${Math.floor(doc.promotedAt.getTime() / 1000)}:R>` : ''}`,
-            inline: true
-          },
-          {
-            name: '🎚️ المضاعف الحالي',
-            value: `**x${multiplier.toFixed(2)}**`,
-            inline: true
-          },
-          {
-            name: '🎟️ نقاطك الحالية',
-            value: `**تذاكر:** ${doc.points.tickets}\n**تحذيرات:** ${doc.points.warns}\n**خبرة:** ${doc.points.xp}`,
-            inline: false
-          },
-          {
-            name: '📦 إجمالي مساهماتك',
-            value: `**تذاكر:** ${doc.lifetime.tickets}\n**تحذيرات:** ${doc.lifetime.warns}\n**خبرة:** ${doc.lifetime.xp}`,
-            inline: false
-          }
-        )
-        .setFooter({
-          text: `بناءً على طلب ${message.author.tag}`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
-
-      if (nextReq) {
-        embed.addFields({
-          name: `🚀 الترقية القادمة • ${nextCfg?.name || `Level ${doc.level + 1}`}`,
-          value: [
-            `🎟️ ${formatProgress(doc.points.tickets, nextReq.tickets)}`,
-            `⚠️ ${formatProgress(doc.points.warns, nextReq.warns)}`,
-            `✨ ${formatProgress(doc.points.xp, nextReq.xp)}`
-          ].join('\n'),
-          inline: false
-        });
-      } else {
-        embed.addFields({
-          name: '🚀 الترقية القادمة',
-          value: '**أنت في أعلى مستوى متاح حالياً.**',
-          inline: false
-        });
-      }
-
-      await sendNoPing(message.channel, { embeds: [embed] });
+      await sendNoPing(message.channel, { embeds: [redPanel('أمر الستات قيد الإعداد حالياً.')] });
       return;
     }
 
@@ -543,63 +467,7 @@ module.exports = {
       const guardKey = `${message.id}:convert`;
       if (!markProcessed(guardKey)) return;
 
-      let targetMember = message.member;
-      let args = tokens;
-
-      if (args.length >= 4) {
-        const maybeMember = await fetchMember(message.guild, args[0]);
-        if (maybeMember) {
-          if (maybeMember.id !== message.author.id && !message.member.permissions.has(MOD_REQUIRED_PERM)) {
-            await sendNoPing(message.channel, {
-              embeds: [redPanel('لا يمكنك تحويل نقاط شخص آخر بدون صلاحية التحذير.')]
-            });
-            return;
-          }
-          targetMember = maybeMember;
-          args = args.slice(1);
-        }
-      }
-
-      const [fromType, amountRaw, toType] = args;
-      if (!fromType || !amountRaw || !toType) {
-        await sendNoPing(message.channel, {
-          embeds: [redPanel('الاستخدام الصحيح: `تحويل [@عضو] <نوع-من> <الكمية> <نوع-إلى>`')]
-        });
-        return;
-      }
-
-      const amount = Number(amountRaw);
-      if (!Number.isFinite(amount) || amount <= 0) {
-        await sendNoPing(message.channel, { embeds: [redPanel('الكمية يجب أن تكون رقم صالح وأكبر من 0.')] });
-        return;
-      }
-
-      const doc = await getOrCreate(message.guild.id, targetMember.id);
-
-      try {
-        const result = await convertPoints(doc, fromType, amount, toType);
-        const actorText =
-          targetMember.id === message.author.id
-            ? 'تم تحويل نقاطك بنجاح.'
-            : `تم تحويل نقاط <@${targetMember.id}>.`;
-        const embed = bluePanel(
-          [
-            `**${actorText}**`,
-            `${POINT_TYPE_EMOJIS[result.fromKey] || '•'} -${result.amountIn} ${POINT_TYPE_LABELS[result.fromKey] || result.fromKey}`,
-            `${POINT_TYPE_EMOJIS[result.toKey] || '•'} +${result.amountOut} ${POINT_TYPE_LABELS[result.toKey] || result.toKey}`
-          ].join('\n')
-        ).setFooter({
-          text: `${message.author.tag} • ${new Date().toLocaleString('ar-SA', {
-            dateStyle: 'medium',
-            timeStyle: 'short'
-          })}`,
-          iconURL: message.author.displayAvatarURL({ size: 128 })
-        });
-
-        await sendNoPing(message.channel, { embeds: [embed] });
-      } catch (err) {
-        await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
-      }
+      await sendNoPing(message.channel, { embeds: [redPanel('نظام التحويل سيُفعّل قريباً.')] });
       return;
     }
 
@@ -884,7 +752,9 @@ module.exports = {
       if (!scope) {
         await sendNoPing(message.channel, {
           embeds: [
-            redPanel('استخدم: `top day`, `top week`, `top month`, أو `top all`\n(أو المكافئ بالعربي).')
+            redPanel(
+              'استخدم: `top day`, `top week`, `top month`, أو `top all`\n(وتقدر تكتب يومي/أسبوعي/شهري/عام بالعربي).'
+            )
           ]
         });
         return;
