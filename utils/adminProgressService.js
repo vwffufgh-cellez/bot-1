@@ -7,6 +7,8 @@ const {
   SUPPORT_ROLE_ID,
   PROMOTION_ANNOUNCE_CHANNEL_ID,
   WARNING_ROLE_IDS: CFG_WARNING_ROLE_IDS,
+  ADMIN_WARN_TIERS,
+  POINT_VALUE,
   PANEL_LINE_IMAGE_URL,
   AUTO_PROMOTE_ON_DEMOTE
 } = require('../config/adminProgressConfig');
@@ -17,6 +19,20 @@ const WARNING_ROLE_IDS = Array.isArray(CFG_WARNING_ROLE_IDS)
       .split(',')
       .map(v => v.trim())
       .filter(Boolean);
+
+function normalizePointValues(raw) {
+  const cfg = raw || {};
+  const tickets = Number(cfg.tickets ?? cfg.ticket ?? 300);
+  const warns = Number(cfg.warns ?? cfg.warn ?? 150);
+  const xp = Number(cfg.xp ?? 1);
+  return {
+    tickets: Number.isFinite(tickets) && tickets > 0 ? tickets : 300,
+    warns: Number.isFinite(warns) && warns > 0 ? warns : 150,
+    xp: Number.isFinite(xp) && xp > 0 ? xp : 1
+  };
+}
+
+const POINT_VALUES = normalizePointValues(POINT_VALUE);
 
 function ensureDocShape(doc) {
   let changed = false;
@@ -78,8 +94,20 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-function getMultiplier(_member) {
-  return 1.0;
+// صعوبة المهام بناءً على رتب التحذير الموجودة على الإداري
+function getMultiplier(member) {
+  if (!member?.roles?.cache) return 1.0;
+  const tiers = Array.isArray(ADMIN_WARN_TIERS) ? ADMIN_WARN_TIERS : [];
+  let maxMultiplier = 1.0;
+
+  for (const tier of tiers) {
+    const roleId = String(tier.roleId);
+    const m = Number(tier.multiplier || 1);
+    if (member.roles.cache.has(roleId) && m > maxMultiplier) {
+      maxMultiplier = m;
+    }
+  }
+  return maxMultiplier;
 }
 
 function getNextLevelConfig(currentLevel) {
@@ -113,6 +141,7 @@ function normalizePointKey(key) {
   return null;
 }
 
+// تحويل بالقيم: ticket=300 xp, warn=150 xp, xp=1
 async function convertPoints(doc, fromType, amount, toType) {
   const fromKey = normalizePointKey(fromType);
   const toKey = normalizePointKey(toType);
@@ -128,11 +157,17 @@ async function convertPoints(doc, fromType, amount, toType) {
 
   if (doc.points[fromKey] < amt) throw new Error('لا تملك نقاط كافية للتبديل.');
 
+  const fromValue = POINT_VALUES[fromKey] || 1;
+  const toValue = POINT_VALUES[toKey] || 1;
+
+  const amountOut = Math.floor((amt * fromValue) / toValue);
+  if (amountOut <= 0) throw new Error('ناتج التحويل أقل من 1. زوّد الكمية.');
+
   doc.points[fromKey] -= amt;
-  doc.points[toKey] += amt;
+  doc.points[toKey] += amountOut;
 
   await doc.save();
-  return { fromKey, toKey, amountIn: amt, amountOut: amt };
+  return { fromKey, toKey, amountIn: amt, amountOut };
 }
 
 async function transferPoints(fromDoc, toDoc, typeArg, amount) {
@@ -161,39 +196,51 @@ function roleMentions(roleIds = []) {
   return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-/**
- * مهم:
- * لو نفس الـ role موجود في أكثر من مستوى (زي SUPPORT_ROLE_ID في 5/6/7/8)
- * نعتمد أقل Level مربوط به كـ base level لهذه الرتبة.
- */
+// حل مشكلة تكرار نفس role بعدة مستويات: نتجاهل الأدوار الغامضة في مزامنة المستوى
 function getHighestLevelFromMemberRoles(member) {
   if (!member?.roles?.cache) return 0;
 
-  const roleToBaseLevel = new Map(); // roleId => min level
+  const roleLevels = new Map(); // roleId => [levels]
   for (const cfg of LEVEL_CONFIGS || []) {
     for (const rid of cfg.roles || []) {
       const id = String(rid);
-      if (!roleToBaseLevel.has(id) || cfg.level < roleToBaseLevel.get(id)) {
-        roleToBaseLevel.set(id, cfg.level);
-      }
+      if (!roleLevels.has(id)) roleLevels.set(id, []);
+      roleLevels.get(id).push(Number(cfg.level || 0));
     }
   }
 
   let highest = 0;
-  for (const [roleId, level] of roleToBaseLevel.entries()) {
-    if (member.roles.cache.has(roleId) && level > highest) highest = level;
+  for (const [roleId, levels] of roleLevels.entries()) {
+    // إذا role متكرر في أكثر من مستوى -> غامض
+    if ((levels || []).length !== 1) continue;
+    const lvl = levels[0];
+    if (member.roles.cache.has(roleId) && lvl > highest) highest = lvl;
   }
 
   return highest;
 }
 
-async function syncDocLevelWithMemberRoles(member, doc) {
+// افتراضياً: ما ننزّل مستوى الدوكيومنت، فقط نرفع إذا ظهر مستوى أعلى من الرتب
+async function syncDocLevelWithMemberRoles(member, doc, options = {}) {
+  const strict = options.strict ?? false;
   const roleLevel = getHighestLevelFromMemberRoles(member);
-  if ((doc.level || 0) !== roleLevel) {
+  const oldLevel = Number(doc.level || 0);
+
+  if (strict) {
+    if (oldLevel !== roleLevel) {
+      doc.level = roleLevel;
+      await doc.save();
+    }
+    return roleLevel;
+  }
+
+  if (roleLevel > oldLevel) {
     doc.level = roleLevel;
     await doc.save();
+    return roleLevel;
   }
-  return roleLevel;
+
+  return oldLevel;
 }
 
 async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {}) {
@@ -202,10 +249,12 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {})
   const toCfg = LEVEL_CONFIGS.find(cfg => cfg.level === toLevel) || { roles: [] };
   const toRoles = Array.isArray(toCfg.roles) ? toCfg.roles.map(String) : [];
 
+  // حسب طلبك: بالترقية نحذف فقط رتب التحذير
   const removeSet = new Set(WARNING_ROLE_IDS.map(String));
   const addedRoles = [];
   const removedRoles = [];
 
+  // بالكسر/المزامنة الصارمة: نحذف رتب أعلى من المستوى الجديد
   if (mode === 'demote' || mode === 'resync') {
     for (const cfg of LEVEL_CONFIGS) {
       if (cfg.level > toLevel) {
