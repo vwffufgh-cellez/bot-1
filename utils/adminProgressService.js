@@ -94,7 +94,7 @@ async function addPoints({ guildId, userId, xp = 0, tickets = 0, warns = 0, warn
   return doc;
 }
 
-// صعوبة المهام بناءً على رتب التحذير الموجودة على الإداري
+// صعوبة المهام حسب رتب التحذير (1.4 / 1.6 / 1.9)
 function getMultiplier(member) {
   if (!member?.roles?.cache) return 1.0;
   const tiers = Array.isArray(ADMIN_WARN_TIERS) ? ADMIN_WARN_TIERS : [];
@@ -141,7 +141,7 @@ function normalizePointKey(key) {
   return null;
 }
 
-// تحويل بالقيم: ticket=300 xp, warn=150 xp, xp=1
+// تحويل بالقيم: 1 ticket = 300 xp, 1 warn = 150 xp, 1 xp = 1
 async function convertPoints(doc, fromType, amount, toType) {
   const fromKey = normalizePointKey(fromType);
   const toKey = normalizePointKey(toType);
@@ -196,33 +196,39 @@ function roleMentions(roleIds = []) {
   return roleIds.map(id => `<@&${id}>`).join('، ');
 }
 
-// حل مشكلة تكرار نفس role بعدة مستويات: نتجاهل الأدوار الغامضة في مزامنة المستوى
+/**
+ * المستوى يُحسب من أعلى رتبة إدارية يمتلكها العضو فعلياً.
+ * لو نفس role متكرر في أكثر من لفل -> نعتبره أقل لفل (base) لتجنب القفزات الوهمية.
+ */
 function getHighestLevelFromMemberRoles(member) {
   if (!member?.roles?.cache) return 0;
 
-  const roleLevels = new Map(); // roleId => [levels]
+  const roleToBaseLevel = new Map(); // roleId => min level
   for (const cfg of LEVEL_CONFIGS || []) {
     for (const rid of cfg.roles || []) {
-      const id = String(rid);
-      if (!roleLevels.has(id)) roleLevels.set(id, []);
-      roleLevels.get(id).push(Number(cfg.level || 0));
+      const roleId = String(rid);
+      const level = Number(cfg.level || 0);
+      if (!roleToBaseLevel.has(roleId) || level < roleToBaseLevel.get(roleId)) {
+        roleToBaseLevel.set(roleId, level);
+      }
     }
   }
 
   let highest = 0;
-  for (const [roleId, levels] of roleLevels.entries()) {
-    // إذا role متكرر في أكثر من مستوى -> غامض
-    if ((levels || []).length !== 1) continue;
-    const lvl = levels[0];
-    if (member.roles.cache.has(roleId) && lvl > highest) highest = lvl;
+  for (const [roleId, lvl] of roleToBaseLevel.entries()) {
+    if (member.roles.cache.has(roleId) && lvl > highest) {
+      highest = lvl;
+    }
   }
 
   return highest;
 }
 
-// افتراضياً: ما ننزّل مستوى الدوكيومنت، فقط نرفع إذا ظهر مستوى أعلى من الرتب
+/**
+ * مزامنة صارمة افتراضياً: الدوك = المستوى الفعلي حسب الرتب (يرفع وينزل).
+ */
 async function syncDocLevelWithMemberRoles(member, doc, options = {}) {
-  const strict = options.strict ?? false;
+  const strict = options.strict ?? true;
   const roleLevel = getHighestLevelFromMemberRoles(member);
   const oldLevel = Number(doc.level || 0);
 
@@ -249,12 +255,12 @@ async function syncMemberRolesForLevel(member, fromLevel, toLevel, options = {})
   const toCfg = LEVEL_CONFIGS.find(cfg => cfg.level === toLevel) || { roles: [] };
   const toRoles = Array.isArray(toCfg.roles) ? toCfg.roles.map(String) : [];
 
-  // حسب طلبك: بالترقية نحذف فقط رتب التحذير
+  // بالترقية: نشيل فقط رتب التحذير
   const removeSet = new Set(WARNING_ROLE_IDS.map(String));
   const addedRoles = [];
   const removedRoles = [];
 
-  // بالكسر/المزامنة الصارمة: نحذف رتب أعلى من المستوى الجديد
+  // بالكسر/المزامنة الصارمة: نشيل أي رتب مستويات أعلى من toLevel
   if (mode === 'demote' || mode === 'resync') {
     for (const cfg of LEVEL_CONFIGS) {
       if (cfg.level > toLevel) {
@@ -301,7 +307,8 @@ async function tryPromote(_context, member, options = {}) {
     const doc = await getOrCreate(guild.id, member.id);
 
     if (!skipRoleSync) {
-      await syncDocLevelWithMemberRoles(member, doc);
+      // هنا صارم: المستوى قبل الترقية لازم يكون مطابق للرتب الفعلية
+      await syncDocLevelWithMemberRoles(member, doc, { strict: true });
     }
 
     const multiplier = getMultiplier(member);
@@ -434,7 +441,7 @@ async function demoteOneLevel(guild, member, options = {}) {
   if (!reason) throw new Error('لا يمكن تنفيذ كسر بدون سبب.');
 
   const doc = await getOrCreate(guild.id, member.id);
-  await syncDocLevelWithMemberRoles(member, doc);
+  await syncDocLevelWithMemberRoles(member, doc, { strict: true });
 
   if ((doc.level ?? 0) <= 0) throw new Error('هذا العضو في أقل مستوى بالفعل.');
 
