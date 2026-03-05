@@ -502,7 +502,7 @@ module.exports = {
 
       const tokens = content.split(/\s+/);
       let command = (tokens.shift() || '').trim();
-      command = command.replace(/^[!?.]+/, '').toLowerCase(); // يدعم !stats أو stats
+      command = command.replace(/^[!?.]+/, '').toLowerCase();
 
       const isWarnCommand = WARN_ALIASES.includes(command);
       const isWarningsCommand = WARNINGS_ALIASES.includes(command);
@@ -517,25 +517,21 @@ module.exports = {
       const isEditCommand = EDIT_ALIASES.includes(command);
       const isBreakCommand = BREAK_ALIASES.includes(command);
 
-      if (
-        !(
-          isWarnCommand ||
-          isWarningsCommand ||
-          isClaimCommand ||
-          isUnclaimCommand ||
-          isXpCommand ||
-          isTopCommand ||
-          isTasksCommand ||
-          isStatsCommand ||
-          isConvertCommand ||
-          isTransferCommand ||
-          isEditCommand ||
-          isBreakCommand
-        )
-      ) {
-        return;
-      }
+      const isKnownCommand =
+        isWarnCommand ||
+        isWarningsCommand ||
+        isClaimCommand ||
+        isUnclaimCommand ||
+        isXpCommand ||
+        isTopCommand ||
+        isTasksCommand ||
+        isStatsCommand ||
+        isConvertCommand ||
+        isTransferCommand ||
+        isEditCommand ||
+        isBreakCommand;
 
+      if (!isKnownCommand) return;
       if (isDuplicateCommand(message)) return;
 
       const isTicketChannel = message.channel.name?.startsWith(TICKET_PREFIX);
@@ -543,6 +539,14 @@ module.exports = {
       const canEditBreak = message.member.roles.cache.has(EDIT_BREAK_ALLOWED_ROLE_ID);
       const canWarnRole = message.member.roles.cache.has(WARN_ALLOWED_ROLE_ID);
       const inWarnChannel = isWarnChannel(message.channel.id);
+
+      // حسب طلبك: كل الأوامر للإدارة فقط، ما عدا top للجميع
+      if (!isTopCommand && !hasSupportRole) {
+        await sendNoPing(message.channel, {
+          embeds: [redPanel('❌ هذا الأمر متاح فقط لرتبة الإدارة.')]
+        });
+        return;
+      }
 
       if (isTasksCommand) {
         const guardKey = `${message.id}:tasks`;
@@ -565,7 +569,7 @@ module.exports = {
           .setDescription(`**الإداري:** <@${message.member.id}>`)
           .addFields(
             { name: '🔢 مستواك الحالي', value: `**Level ${doc.level}**`, inline: true },
-            { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+            { name: '🎚️ المضاعف (صعوبة التحذير)', value: `**x${multiplier.toFixed(2)}**`, inline: true },
             {
               name: '📦 نقاطك الحالية',
               value: `🎟️ ${doc.points.tickets}\n⚠️ ${doc.points.warns}\n✨ ${doc.points.xp}`,
@@ -608,7 +612,6 @@ module.exports = {
           let member = message.member;
           let targetUser = message.author;
 
-          // دعم صيغ: "ستات ايدي 123" أو "stats id 123"
           const lowerFirst = (tokens[0] || '').toLowerCase();
           if (['id', 'userid', 'ايدي', 'آيدي', 'اىدي'].includes(lowerFirst) && tokens[1]) {
             targetRaw = tokens[1];
@@ -641,7 +644,6 @@ module.exports = {
           const targetId = member?.id || targetUser.id;
           const doc = await getOrCreate(message.guild.id, targetId);
 
-          // مهم: إذا متاح كـ GuildMember نسوي مزامنة المستوى من الرتب الحالية
           if (member) {
             await syncDocLevelWithMemberRoles(member, doc);
           }
@@ -685,7 +687,7 @@ module.exports = {
                 }`,
                 inline: true
               },
-              { name: '🎚️ المضاعف', value: `**x${multiplier.toFixed(2)}**`, inline: true },
+              { name: '🎚️ معامل الصعوبة', value: `**x${multiplier.toFixed(2)}**`, inline: true },
               {
                 name: '🎟️ النقاط الحالية',
                 value: `**تذاكر:** ${points.tickets}\n**تحذيرات:** ${points.warns}\n**خبرة:** ${points.xp}`,
@@ -733,7 +735,6 @@ module.exports = {
       if (isBreakCommand) {
         const guardKey = `${message.id}:break`;
         if (!markProcessed(guardKey)) return;
-
         if (!canEditBreak) return;
 
         const targetArg = tokens.shift();
@@ -753,10 +754,7 @@ module.exports = {
         }
 
         try {
-          const result = await demoteOneLevel(message.guild, targetMember, {
-            reason,
-            byId: message.author.id
-          });
+          const result = await demoteOneLevel(message.guild, targetMember, { reason, byId: message.author.id });
 
           const breakEmbed = new EmbedBuilder()
             .setColor(0xff0000)
@@ -818,7 +816,6 @@ module.exports = {
       if (isConvertCommand) {
         const guardKey = `${message.id}:convert`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRole) return;
 
         let amountRaw, fromType, toType;
         if (tokens.length >= 3) {
@@ -859,6 +856,8 @@ module.exports = {
             '🔄 تبديل النقاط'
           );
           await sendNoPing(message.channel, { embeds: [embed] });
+
+          await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
         } catch (err) {
           await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التبديل.')] });
         }
@@ -868,7 +867,6 @@ module.exports = {
       if (isTransferCommand) {
         const guardKey = `${message.id}:transfer`;
         if (!markProcessed(guardKey)) return;
-        if (!hasSupportRole) return;
 
         if (tokens.length < 3) {
           await sendNoPing(message.channel, {
@@ -914,6 +912,8 @@ module.exports = {
             '📤 تحويل النقاط'
           );
           await sendNoPing(message.channel, { embeds: [embed] });
+
+          await tryPromote(message, message.member, { announceInChannel: true, dmOnPromote: true });
         } catch (err) {
           await sendNoPing(message.channel, { embeds: [redPanel(err.message || 'فشل التحويل.')] });
         }
@@ -923,7 +923,6 @@ module.exports = {
       if (isEditCommand) {
         const guardKey = `${message.id}:edit`;
         if (!markProcessed(guardKey)) return;
-
         if (!canEditBreak) return;
 
         if (tokens.length < 2) {
@@ -1062,7 +1061,6 @@ module.exports = {
           });
           return;
         }
-        if (!hasSupportRole) return;
 
         let ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (ticketClaim) return;
@@ -1103,7 +1101,6 @@ module.exports = {
         if (!markProcessed(guardKey, COOLDOWN)) return;
 
         if (!isTicketChannel) return;
-        if (!hasSupportRole) return;
 
         const ticketClaim = await TicketClaim.findOne({ channelId: message.channel.id });
         if (!ticketClaim) return;
