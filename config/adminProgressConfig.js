@@ -1,6 +1,9 @@
 // config/adminProgressConfig.js
 const SUPPORT_ROLE_ID = '1445473101629493383';
-const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473101629493383';
+
+// رتبة أعلى لأوامر كسر/تعديل (مخصصة للرتب العالية)
+const EDIT_BREAK_ALLOWED_ROLE_ID = '1445473095811989524';
+
 const WARN_ALLOWED_ROLE_ID = '1445473101629493383';
 const WARN_COMMAND_CHANNEL_IDS = ['1463931942058852399'];
 const PROMOTION_ANNOUNCE_CHANNEL_ID = '1463932101496799252';
@@ -25,10 +28,11 @@ const LEVEL_CONFIGS = ADMIN_LEVELS.map(lvl => ({
   roles: lvl.roleId ? [String(lvl.roleId)] : []
 }));
 
+// نسب الصعوبة المطلوبة منك: 40/60/90 => معاملات 1.4 / 1.6 / 1.9
 const ADMIN_WARN_TIERS = [
-  { roleId: '1445473102359167187', multiplier: 1.6, label: 'تحذير إداري أول' },
-  { roleId: '1445473103319924797', multiplier: 1.8, label: 'تحذير إداري ثاني' },
-  { roleId: '1445473104301265036', multiplier: 2.1, label: 'تحذير إداري ثالث' }
+  { roleId: '1445473102359167187', multiplier: 1.4, label: 'تحذير إداري أول (40/100)' },
+  { roleId: '1445473103319924797', multiplier: 1.6, label: 'تحذير إداري ثاني (60/100)' },
+  { roleId: '1445473104301265036', multiplier: 1.9, label: 'تحذير إداري ثالث (90/100)' }
 ];
 
 const WARNING_ROLE_IDS = ADMIN_WARN_TIERS.map(t => String(t.roleId));
@@ -48,15 +52,15 @@ module.exports = {
   ADMIN_WARN_TIERS,
   WARNING_ROLE_IDS,
 
+  // قيم التحويل الرسمية
   POINT_VALUE: {
-    ticket: 300,
-    warn: 150,
+    tickets: 300,
+    warns: 150,
     xp: 1
   },
 
   ALIASES: {
     TASKS: ['المهام', 'مهام', 'tasks', 'task', 'مهمة'],
-    // أضفت "اساتات" هنا
     STATS: ['ستات', 'stats', 'stat', 'استات', 'اساتات', 'إحصائيات', 'احصائيات', 'بطاقة'],
     CONVERT: ['تبديل', 'بدل', 'exchange', 'swap', 'switch', 'convert', 'تحويل_نوع'],
     TRANSFER: ['تحويل', 'حول', 'transfer', 'send', 'تحويل_نقاط'],
@@ -69,5 +73,5 @@ module.exports = {
     xp: ['اكسبي', 'xp', 'خبرة', 'خبره', 'اكس_بي', 'exp', 'experience']
   },
 
-  AUTO_PROMOTE_ON_DEMOTE: true // تفعيل الترقية التلقائية بعد الكسر
+  AUTO_PROMOTE_ON_DEMOTE: true
 };
